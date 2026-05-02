@@ -1,0 +1,65 @@
+# YoutubeBrainwash Configuration
+# Copy to config.local.yaml for local overrides (git-ignored)
+
+youtube:
+  # OAuth credentials — set in environment or config.local.yaml
+  client_id: ""
+  client_secret: ""
+  project_id: ""
+
+curation:
+  # How many candidate videos to fetch from subscriptions + search
+  max_candidates: 80
+  # How many candidates to fetch transcripts for (top N by recency/views)
+  transcript_candidates: 30
+  # Minimum score (1-10) to include in the morning feed
+  min_score: 7.0
+  # Maximum videos in the morning feed playlist
+  max_feed_size: 15
+  # Search queries for discovering new content (supplementing subscriptions)
+  search_topics:
+    - "AI agents tutorial"
+    - "LLM research paper"
+    - "machine learning engineering"
+    - "Claude Anthropic"
+    - "self-hosting homelab"
+    - "Raspberry Pi projects"
+  # Video duration filters (minutes)
+  min_duration_minutes: 5
+  max_duration_minutes: 60
+  # Only consider videos published in the last N hours
+  recency_hours: 48
+  # Language filter
+  language: "en"
+
+scoring:
+  # Claude Code CLI command for scoring
+  claude_command: "claude"
+  # Max tokens for scoring prompt
+  max_prompt_tokens: 50000
+
+playback:
+  # Snapcast server config
+  snapcast_port: 1704
+  snapcast_control_port: 1705
+  # Audio format
+  sample_rate: 48000
+  channels: 2
+  # FIFO pipe path for Snapcast
+  snap_fifo: "/tmp/snapfifo"
+
+schedule:
+  # When to run the daily curation (24h format)
+  curation_time: "04:00"
+  # Default wake-up time (used until AlarmAPI is connected)
+  default_wakeup_time: "07:30"
+
+api:
+  host: "0.0.0.0"
+  port: 5000
+
+bluetooth:
+  # Echo Dot MAC addresses (fill in after pairing)
+  devices:
+    kitchen: ""
+    bedroom: ""
