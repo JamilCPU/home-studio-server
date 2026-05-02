@@ -1,0 +1,32 @@
+# Secrets
+config.local.yaml
+token.json
+client_secret*.json
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Data (local state, not tracked)
+data/watch_history.json
+data/score_log.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual env
+venv/
+.venv/

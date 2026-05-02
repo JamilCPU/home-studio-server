@@ -1,0 +1,29 @@
+{
+  "topics": {
+    "AI agents": 10,
+    "LLM research": 9,
+    "transformer architecture": 8,
+    "Claude / Anthropic": 9,
+    "machine learning ops": 7,
+    "Python tooling": 6,
+    "home lab / self-hosting": 7,
+    "Raspberry Pi projects": 6,
+    "software engineering": 7,
+    "open source AI": 8,
+    "prompt engineering": 7,
+    "neural network training": 7
+  },
+  "preferred_channels": [],
+  "blocked_channels": [],
+  "preferred_formats": {
+    "deep_dive_tutorial": 9,
+    "research_paper_walkthrough": 9,
+    "practical_demo": 8,
+    "news_roundup": 5,
+    "opinion_commentary": 4,
+    "interview": 6
+  },
+  "min_duration_minutes": 5,
+  "max_duration_minutes": 60,
+  "language": "en"
+}
