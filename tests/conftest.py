@@ -118,3 +118,16 @@ def tmp_data_dir(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     return data_dir
+
+
+@pytest.fixture
+def db(tmp_path):
+    """Yield a freshly migrated SQLite connection, closed after the test."""
+    from src.db import connect, migrate
+
+    conn = connect(tmp_path / "test.db")
+    migrate(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
