@@ -45,6 +45,7 @@ def test_run_claude_returns_stripped_stdout_and_passes_args():
     assert cmd == ["cl", "-p", "hi"]
     assert kwargs == {
         "capture_output": True,
+        "stdin": subprocess.DEVNULL,
         "text": True,
         "timeout": 7,
         "encoding": "utf-8",

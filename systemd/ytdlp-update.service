@@ -1,0 +1,8 @@
+[Unit]
+Description=Update yt-dlp in the Home Studio venv
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jamil/home-studio
+ExecStart=/home/jamil/home-studio/.venv/bin/pip install -U yt-dlp
+ExecStartPost=/usr/bin/systemctl --user try-restart home-studio.service

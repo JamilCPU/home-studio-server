@@ -62,6 +62,7 @@ def run_claude(
         result = runner(
             [command, "-p", prompt],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=timeout_s,
             encoding="utf-8",

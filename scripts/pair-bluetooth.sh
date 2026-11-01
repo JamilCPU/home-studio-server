@@ -1,63 +1,49 @@
 #!/usr/bin/env bash
-# Pair and connect to an Echo Dot (or any Bluetooth speaker)
-# Run: bash scripts/pair-bluetooth.sh <MAC_ADDRESS>
-# Example: bash scripts/pair-bluetooth.sh AA:BB:CC:DD:EE:FF
-#
-# To find your Echo Dot's MAC:
-# 1. Put Echo Dot in pairing mode: "Alexa, pair Bluetooth"
-# 2. Run: bluetoothctl scan on
-# 3. Look for your Echo Dot in the list
-
+# Pair, trust and connect an Echo (any Bluetooth speaker) through the USB adapter.
+# Usage: bash scripts/pair-bluetooth.sh <MAC> [adapter=hci1]
+# Find the MAC: say "Alexa, pair Bluetooth", then run `bluetoothctl scan on`
+# (use `select <controller>` first) and look for the Echo.
 set -euo pipefail
 
 MAC="${1:-}"
-
+ADAPTER="${2:-hci1}"
 if [ -z "$MAC" ]; then
-    echo "Usage: $0 <BLUETOOTH_MAC_ADDRESS>"
-    echo ""
-    echo "To find your Echo Dot's MAC address:"
-    echo "  1. Say: 'Alexa, pair Bluetooth'"
-    echo "  2. Run: bluetoothctl scan on"
-    echo "  3. Look for 'Echo Dot' in the output"
+    echo "Usage: $0 <BLUETOOTH_MAC> [adapter=hci1]" >&2
     exit 1
 fi
 
-echo "=== Pairing Bluetooth: $MAC ==="
-
-# Install Bluetooth utilities if needed
-if ! command -v bluetoothctl &>/dev/null; then
-    echo "Installing Bluetooth utilities..."
-    sudo apt-get update
-    sudo apt-get install -y bluetooth bluez pulseaudio-module-bluetooth
-    sudo systemctl enable bluetooth
-    sudo systemctl start bluetooth
+# Map hciN -> controller address for `bluetoothctl select`.
+CTRL="$(hciconfig "$ADAPTER" 2>/dev/null | awk '/BD Address/ {print $3}')"
+if [ -z "$CTRL" ]; then
+    CTRL="$(bluetoothctl list | awk -v a="$ADAPTER" 'NR==1 {print $2}')"
+    echo "Could not map $ADAPTER via hciconfig; falling back to the first controller." >&2
 fi
 
-# Pair and connect
-echo "Pairing with $MAC..."
-bluetoothctl << EOF
-power on
-agent on
-default-agent
-scan on
-EOF
+echo "=== Pairing $MAC on $ADAPTER ==="
+{
+    echo "select $CTRL"
+    echo "power on"
+    echo "agent on"
+    echo "default-agent"
+    echo "scan on"
+    sleep 8
+    echo "pair $MAC"
+    sleep 6
+    echo "trust $MAC"
+    echo "connect $MAC"
+    sleep 5
+    echo "scan off"
+    echo "quit"
+} | bluetoothctl
 
-sleep 5
+# Make the speaker the default PipeWire sink (give the A2DP sink a moment to appear).
+SINK="bluez_output.${MAC//:/_}.1"
+for _ in 1 2 3 4 5; do
+    NAME="$(pactl list short sinks | awk -v m="${MAC//:/_}" '$2 ~ m {print $2; exit}')"
+    [ -n "$NAME" ] && break
+    sleep 2
+done
+SINK="${NAME:-$SINK}"
+pactl set-default-sink "$SINK" && echo "Default sink: $SINK"
 
-bluetoothctl << EOF
-pair $MAC
-trust $MAC
-connect $MAC
-EOF
-
-sleep 3
-
-echo ""
-echo "=== Bluetooth Pairing Complete ==="
-echo "Device $MAC should now be connected"
-echo ""
-echo "To auto-connect on boot, the device is already trusted."
-echo "To verify: bluetoothctl info $MAC"
-echo ""
-echo "To set as default audio output:"
-echo "  pactl set-default-sink bluez_sink.${MAC//:/_}.a2dp_sink"
+echo "Verify: bluetoothctl info $MAC   (expect 'Connected: yes')"
