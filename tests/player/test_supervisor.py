@@ -135,6 +135,34 @@ def test_failed_restart_logs_error_and_retries_later(parts, factory_db):
     assert engine.replaced == make.made
 
 
+def test_failed_swap_closes_new_mpv_and_retries(factory_db):
+    class FlakyEngine(FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.fail = True
+
+        def replace_mpv(self, mpv):
+            if self.fail:
+                self.fail = False
+                raise RuntimeError("db locked")
+            super().replace_mpv(mpv)
+
+    engine, clock, make, first = FlakyEngine(), Clock(), Factory(), FakeMpv()
+    sup = MpvSupervisor(engine, first, make, factory_db, clock=clock)
+    first.dead = True
+    sup.step()
+    clock.t += 2
+    assert sup.step() is False
+    assert make.made[0].closed
+    assert sup.mpv is first
+    assert player_events(factory_db)[-1][0] == "error"
+    sup.step()
+    clock.t += 4
+    assert sup.step() is True
+    assert engine.replaced == [make.made[1]]
+    assert sup.mpv is make.made[1] and not make.made[1].closed
+
+
 def test_run_forever_stops_on_event(parts):
     sup, *_ = parts
     stop = threading.Event()

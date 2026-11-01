@@ -102,6 +102,35 @@ def test_calls_are_paced():
     assert sleeps == [2.0]
 
 
+def test_pacing_holds_across_threads():
+    import threading
+    import time
+
+    starts: list[float] = []
+
+    class Stamping(Factory):
+        def __call__(self, opts):
+            starts.append(time.monotonic())
+            return super().__call__(opts)
+
+    y = YtDlp("x", ydl_factory=Stamping(info={"entries": []}), min_interval_s=0.05)
+    barrier = threading.Barrier(4)
+
+    def worker():
+        barrier.wait()
+        y.search("q")
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    starts.sort()
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert len(starts) == 4
+    assert all(g >= 0.045 for g in gaps), gaps
+
+
 def test_bot_check_raises_source_auth_error():
     f = Factory(info=DownloadError("Sign in to confirm you're not a bot"))
     with pytest.raises(SourceAuthError):

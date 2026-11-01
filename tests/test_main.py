@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from src.__main__ import (
     ServiceFactories,
+    _serve_runtime,
     _start_background,
     _stop_background,
     build_parser,
@@ -28,6 +29,7 @@ from src.db import connect, migrate
 from src.models import AppConfig
 from src.sources.ytdlp import FeedItem, SourceAuthError, SourceError
 from src.store.agent import latest_taste
+from src.store import queue
 from src.store.settings import imported, latest_event
 from src.store.videos import Chapter, Video, get_video, upsert_video
 from tests.agent.fakes import FakeClaude
@@ -207,6 +209,30 @@ def test_import_account_caps_ensure_videos_at_300(db):
     assert len(yt.meta_calls) == 300
 
 
+def test_import_account_only_fetches_new_videos(db):
+    upsert_video(db, vid("l1"))
+    yt = FakeYt(feeds={"liked": ["l1", "l2"]})
+    counts = import_account(db, ytdlp=yt, data_api=None, claude=FakeClaude([TASTE_JSON]))
+    assert yt.meta_calls == ["l2"]
+    assert counts["videos"] == 1
+
+
+def test_import_account_logs_ok_event(db):
+    yt = FakeYt(feeds={"liked": ["l1", "l2"]})
+    import_account(db, ytdlp=yt, data_api=None, claude=FakeClaude([TASTE_JSON]))
+    assert latest_event(db, "import")[:2] == ("info", "ok: 2 new videos")
+
+
+def test_import_account_logs_error_event(db):
+    class Broken(FakeYt):
+        def subscribed_channels(self):
+            raise RuntimeError("feed parser broke")
+
+    with pytest.raises(RuntimeError):
+        import_account(db, ytdlp=Broken(), data_api=None, claude=FakeClaude([]))
+    assert latest_event(db, "import")[:2] == ("error", "RuntimeError: feed parser broke")
+
+
 def test_import_account_skips_failing_feed(db):
     yt = FakeYt(feeds={"liked": ["l1"]}, feed_errors={"recommended": SourceError("nope")})
     counts = import_account(db, ytdlp=yt, data_api=None, claude=FakeClaude([TASTE_JSON]))
@@ -219,6 +245,7 @@ def test_import_account_auth_error_logged_and_raised(db):
     with pytest.raises(SourceAuthError):
         import_account(db, ytdlp=yt, data_api=None, claude=FakeClaude([]))
     assert latest_event(db, "ytdlp")[0] == "error"
+    assert latest_event(db, "import")[0] == "error"
 
 
 def test_chapters_hook_fills_chapters_on_own_connection(tmp_path):
@@ -261,3 +288,65 @@ def test_background_starts_and_stops_cleanly(tmp_path):
     assert not runtime.monitor.running
     assert mpv.closed
     assert runtime.worker._thread is None
+
+
+def _fake_factories(mpv, bt=None) -> ServiceFactories:
+    return ServiceFactories(
+        mpv=lambda config: mpv,
+        ytdlp=lambda config: FakeYt(),
+        data_api=Recorder(None),
+        claude=lambda config: FakeClaude([]),
+        bt=bt or (lambda config, db_factory: FakeBt()),
+    )
+
+
+def test_shutdown_stops_current_play(tmp_path):
+    mpv = SlowMpv()
+    runtime = build_runtime(AppConfig(db_path=str(tmp_path / "s.db")), _fake_factories(mpv))
+    with closing(runtime.deps.db_factory()) as conn:
+        upsert_video(conn, vid("abc"))
+        queue.enqueue(conn, "abc", "user")
+    runtime.engine.play_next()
+    stop = threading.Event()
+    _stop_background(runtime, stop, _start_background(runtime, stop))
+    with closing(runtime.deps.db_factory()) as conn:
+        assert conn.execute("SELECT end_reason FROM plays").fetchone()[0] == "stopped"
+    assert mpv.closed
+
+
+def test_serve_start_failure_still_cleans_up(tmp_path):
+    class BrokenBt(FakeBt):
+        def start(self):
+            raise RuntimeError("no dbus")
+
+    mpv = SlowMpv()
+    runtime = build_runtime(
+        AppConfig(db_path=str(tmp_path / "s.db")),
+        _fake_factories(mpv, bt=lambda config, db_factory: BrokenBt()),
+    )
+    served = []
+    with pytest.raises(RuntimeError, match="no dbus"):
+        _serve_runtime(runtime, lambda app: served.append(app))
+    assert served == []
+    assert runtime.worker._thread is None
+    assert mpv.closed
+
+
+def test_serve_runs_server_then_cleans_up(tmp_path):
+    mpv = SlowMpv()
+    runtime = build_runtime(AppConfig(db_path=str(tmp_path / "s.db")), _fake_factories(mpv))
+    served = []
+    _serve_runtime(runtime, lambda app: served.append(app))
+    assert len(served) == 1
+    assert mpv.closed and runtime.worker._thread is None
+
+
+def test_build_runtime_failure_closes_mpv(tmp_path):
+    mpv = SlowMpv()
+
+    def broken_bt(config, db_factory):
+        raise ValueError("invalid bluetooth MAC address")
+
+    with pytest.raises(ValueError):
+        build_runtime(AppConfig(db_path=str(tmp_path / "s.db")), _fake_factories(mpv, broken_bt))
+    assert mpv.closed

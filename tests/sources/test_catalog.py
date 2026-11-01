@@ -70,6 +70,13 @@ def test_catalog_without_data_api_uses_ytdlp(db):
     assert yt.meta_calls == ["a", "b"]
 
 
+def test_catalog_falls_back_on_any_data_api_error(db):
+    yt = FakeYt()
+    out = catalog.ensure_videos(db, ["a"], FakeApi(RuntimeError("HttpError 403: bad key")), yt)
+    assert [v.video_id for v in out] == ["a"]
+    assert yt.meta_calls == ["a"]
+
+
 def test_catalog_fallback_propagates_auth_error(db):
     yt = FakeYt(fail={"a": SourceAuthError("cookies")})
     with pytest.raises(SourceAuthError):

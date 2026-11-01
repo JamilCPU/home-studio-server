@@ -20,6 +20,17 @@ MAX_DELAY_S = 60.0
 POLL_S = 0.5
 
 
+def close_mpv(mpv: Any) -> None:
+    """Close an mpv (if it can be closed), logging rather than raising on failure."""
+    close = getattr(mpv, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not close mpv")
+
+
 class MpvSupervisor:
     """Watches the engine's mpv; a dead one is closed and replaced after a backoff.
 
@@ -71,14 +82,20 @@ class MpvSupervisor:
         return self._restart(delay)
 
     def _restart(self, waited: float) -> bool:
-        self._close(self._mpv)
+        close_mpv(self._mpv)
         try:
             new = self._factory()
         except Exception as exc:  # noqa: BLE001 - keep supervising
             logger.exception("mpv restart failed")
             self._log("error", f"mpv restart failed: {type(exc).__name__}: {exc}"[:300])
             return False
-        self._engine.replace_mpv(new)
+        try:
+            self._engine.replace_mpv(new)
+        except Exception as exc:  # noqa: BLE001 - retry with the next delay
+            logger.exception("could not swap in the new mpv")
+            close_mpv(new)
+            self._log("error", f"mpv swap failed: {type(exc).__name__}: {exc}"[:300])
+            return False
         self._mpv = new
         self._started_at = self._clock()
         logger.info("mpv restarted after %.0f s", waited)
@@ -94,17 +111,7 @@ class MpvSupervisor:
             stop_event.wait(poll_s)
 
     def close(self) -> None:
-        self._close(self._mpv)
-
-    @staticmethod
-    def _close(mpv: Any) -> None:
-        close = getattr(mpv, "close", None)
-        if close is None:
-            return
-        try:
-            close()
-        except Exception:  # noqa: BLE001
-            logger.exception("could not close mpv")
+        close_mpv(self._mpv)
 
     def _log(self, level: str, message: str) -> None:
         try:

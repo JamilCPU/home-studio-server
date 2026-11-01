@@ -29,12 +29,13 @@ from src.legacy import migrate_legacy
 from src.models import AppConfig
 from src.player.engine import PlaybackEngine
 from src.player.mpv import MpvIpc
-from src.player.supervisor import MpvSupervisor
+from src.player.supervisor import MpvSupervisor, close_mpv
 from src.scheduler import MorningScheduler
 from src.sources import catalog
 from src.sources.data_api import DataApi
 from src.sources.ytdlp import FeedItem, SourceAuthError, SourceError, YtDlp
 from src.store.settings import imported, log_event, record_import
+from src.store.videos import get_video
 
 logger = logging.getLogger("home_studio")
 
@@ -47,6 +48,7 @@ IMPORT_KIND = {
     "subscriptions": "subscription",
     "watch_later": "playlist",
 }
+IMPORT_COMPONENT = "import"
 FEED_LIMIT = 200
 MAX_IMPORT_VIDEOS = 300
 JOIN_TIMEOUT_S = 5.0
@@ -131,6 +133,15 @@ def build_runtime(config: AppConfig, factories: ServiceFactories | None = None) 
     data_api, ytdlp = _sources(config, factories, db_factory)
     claude = factories.claude(config)
     mpv = factories.mpv(config)
+    try:
+        return _wire(config, factories, db_factory, data_api, ytdlp, claude, mpv)
+    except BaseException:
+        close_mpv(mpv)  # do not leave an mpv process behind
+        raise
+
+
+def _wire(config, factories, db_factory, data_api, ytdlp, claude, mpv) -> Runtime:
+    """Build the engine and everything around it on top of the sources and mpv."""
     engine = PlaybackEngine(db_factory, mpv, on_before_play=chapters_hook(db_factory, ytdlp))
     supervisor = MpvSupervisor(engine, mpv, lambda: factories.mpv(config), db_factory)
     run_fn = partial(run_request, claude=claude, data_api=data_api, ytdlp=ytdlp)
@@ -211,14 +222,19 @@ def _seed(conn: sqlite3.Connection, claude: Any) -> int:
 def import_account(conn: sqlite3.Connection, *, ytdlp: Any, data_api: Any, claude: Any) -> dict:
     """Pull the account's channels and feeds into ``account_imports``; returns counts.
 
-    Then fetches metadata for up to 300 imported videos (yt-dlp paces its own calls)
-    and seeds the taste profile if there is none. SourceAuthError is logged and raised.
+    Then fetches metadata for up to 300 imported videos not yet stored (yt-dlp paces
+    its own calls) and seeds the taste profile if there is none. The outcome is an
+    "import" status event; SourceAuthError is also logged for ytdlp. Errors re-raise.
     """
     try:
-        return _import(conn, ytdlp, data_api, claude)
-    except SourceAuthError:
-        log_event(conn, "ytdlp", "error", AUTH_EVENT_MESSAGE)
+        counts = _import(conn, ytdlp, data_api, claude)
+    except Exception as exc:
+        if isinstance(exc, SourceAuthError):
+            log_event(conn, "ytdlp", "error", AUTH_EVENT_MESSAGE)
+        log_event(conn, IMPORT_COMPONENT, "error", f"{type(exc).__name__}: {exc}"[:300])
         raise
+    log_event(conn, IMPORT_COMPONENT, "info", f"ok: {counts['videos']} new videos")
+    return counts
 
 
 def _import(conn: sqlite3.Connection, ytdlp: Any, data_api: Any, claude: Any) -> dict:
@@ -231,7 +247,8 @@ def _import(conn: sqlite3.Connection, ytdlp: Any, data_api: Any, claude: Any) ->
         _record_new(conn, IMPORT_KIND[feed], items)
         counts[feed] = len(items)
         video_ids.extend(i.video_id for i in items if i.video_id)
-    wanted = list(dict.fromkeys(video_ids))[:MAX_IMPORT_VIDEOS]
+    new_ids = [i for i in dict.fromkeys(video_ids) if get_video(conn, i) is None]
+    wanted = new_ids[:MAX_IMPORT_VIDEOS]
     counts["videos"] = len(catalog.ensure_videos(conn, wanted, data_api, ytdlp))
     counts["taste_seeded"] = _seed(conn, claude)
     return counts
@@ -240,25 +257,31 @@ def _import(conn: sqlite3.Connection, ytdlp: Any, data_api: Any, claude: Any) ->
 # -- commands ---------------------------------------------------------------------
 
 
-def _start_background(runtime: Runtime, stop: threading.Event) -> list[threading.Thread]:
+def _start_background(
+    runtime: Runtime, stop: threading.Event, started: list[threading.Thread] | None = None
+) -> list[threading.Thread]:
+    """Start the worker, monitor and loop threads; ``started`` collects threads as they start
+    so a caller can still join them if a later start fails."""
+    started = [] if started is None else started
     loops = (
         ("engine-loop", runtime.engine.run_forever),
         ("mpv-supervisor", runtime.supervisor.run_forever),
         ("morning-scheduler", runtime.scheduler.run_forever),
     )
-    threads = [threading.Thread(target=fn, args=(stop,), name=n, daemon=True) for n, fn in loops]
     runtime.worker.start()
     runtime.monitor.start()
-    for thread in threads:
+    for name, fn in loops:
+        thread = threading.Thread(target=fn, args=(stop,), name=name, daemon=True)
         thread.start()
-    return threads
+        started.append(thread)
+    return started
 
 
 def _stop_background(
     runtime: Runtime, stop: threading.Event, threads: list[threading.Thread]
 ) -> None:
     stop.set()
-    for step in (runtime.worker.stop, runtime.monitor.stop):
+    for step in (runtime.engine.stop, runtime.worker.stop, runtime.monitor.stop):
         try:
             step()
         except Exception:  # noqa: BLE001 - keep shutting down
@@ -268,16 +291,24 @@ def _stop_background(
     runtime.supervisor.close()
 
 
+def _serve_runtime(runtime: Runtime, run_server: Callable[[Any], None]) -> None:
+    """Start the background pieces, run the server, and always shut everything down."""
+    stop = threading.Event()
+    threads: list[threading.Thread] = []
+    try:
+        threads = _start_background(runtime, stop, threads)
+        run_server(create_app(runtime.deps))
+    finally:
+        _stop_background(runtime, stop, threads)
+
+
 def _cmd_serve(config: AppConfig) -> int:
     import uvicorn
 
     runtime = build_runtime(config)
-    stop = threading.Event()
-    threads = _start_background(runtime, stop)
-    try:
-        uvicorn.run(create_app(runtime.deps), host=config.api_host, port=config.api_port)
-    finally:
-        _stop_background(runtime, stop, threads)
+    _serve_runtime(
+        runtime, lambda app: uvicorn.run(app, host=config.api_host, port=config.api_port)
+    )
     return 0
 
 

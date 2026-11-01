@@ -126,6 +126,7 @@ class FakeDataApi:
         self.quota_exceeded = False
         self.searches: list[str] = []
         self.search_exc: Exception | None = None
+        self.details_exc: Exception | None = None
 
     def search(self, query: str, max_results: int = 25) -> list[str]:
         self.searches.append(query)
@@ -136,6 +137,8 @@ class FakeDataApi:
         return list(self.search_results)
 
     def video_details(self, ids: list[str]) -> list[Video]:
+        if self.details_exc is not None:
+            raise self.details_exc
         if self.quota_exceeded:
             raise QuotaExceeded("over")
         return [self._catalog.videos[i] for i in ids if i in self._catalog.videos]

@@ -149,12 +149,14 @@ def _parse_picks(data: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def _search(query: str, data_api, ytdlp) -> list[str]:
-    """Search with the Data API; yt-dlp when there is no API key or no quota left."""
+    """Search with the Data API; yt-dlp without an API key, quota, or a working API."""
     if data_api is not None:
         try:
             return data_api.search(query, 25)
         except QuotaExceeded:
             logger.warning("Data API quota exhausted; searching via yt-dlp")
+        except Exception:  # noqa: BLE001 - bad key, network: fall back to yt-dlp
+            logger.exception("Data API search failed; searching via yt-dlp")
     return ytdlp.search(query, 20)
 
 
