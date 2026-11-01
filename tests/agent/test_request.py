@@ -290,3 +290,133 @@ def test_taste_context_formats_feedback_lines(db):
     assert "Title a | Chan | liked=- sat=- | skipped at 2:05" in text
     assert "Title b | Chan | liked=y sat=8 | great" in text
     assert "(no taste profile yet)" in text
+
+
+# -- pick quality (final review I6) -------------------------------------------------
+
+
+def test_shortlist_prompt_has_taste_and_count(db):
+    save_taste(db, "Loves long hardware deep dives", ["hardware"], [], "user")
+    claude = FakeClaude([plan(10), shortlist("a"), picks(("a", "r"))])
+    run(db, claude)
+    assert "Loves long hardware deep dives" in claude.prompts[1]
+    assert "at least 10" in claude.prompts[1]
+    assert "at most 10 video ids" in claude.prompts[1]  # max(8, count), up to 12
+
+
+def test_shortlist_cap_follows_count(db):
+    ids = [f"v{i:02d}" for i in range(15)]
+    api = FakeApi(ids)
+    claude = FakeClaude([plan(10), shortlist(*ids), picks(*[(i, "r") for i in ids])])
+    _, queued = run(db, claude, api=api)
+    shortlisted = [i for i in ids if f"{i} | Title {i}" in claude.prompts[2]]
+    assert len(shortlisted) == 10
+    assert len(queued) == 10
+
+
+def test_shortlist_prompt_default_cap_is_8(db):
+    claude = FakeClaude([plan(2), shortlist("a"), picks(("a", "r"))])
+    run(db, claude)
+    assert "at most 8 video ids" in claude.prompts[1]
+
+
+class DurApi(FakeApi):
+    def __init__(self, durations):
+        super().__init__(list(durations))
+        self.durations = durations
+
+    def video_details(self, ids):
+        return [vid(i, self.durations[i]) for i in ids]
+
+
+def test_short_live_and_unknown_length_videos_dropped(db):
+    api = DurApi({"long": 1200, "short": 90, "live": 0, "unknown": None, "edge": 180})
+    claude = FakeClaude([plan(), shortlist("long"), picks(("long", "r"))])
+    run(db, claude, api=api)
+    assert "long | Title long" in claude.prompts[1]
+    assert "edge | Title edge" in claude.prompts[1]
+    for dropped in ("short", "live", "unknown"):
+        assert f"{dropped} | Title {dropped}" not in claude.prompts[1]
+
+
+@pytest.mark.parametrize("prompt", ["some short videos about GPUs", "a funny clip"])
+def test_short_videos_kept_when_asked_for(db, prompt):
+    api = DurApi({"long": 1200, "short": 90})
+    claude = FakeClaude([plan(), shortlist("short"), picks(("short", "r"))])
+    run(db, claude, api=api, prompt=prompt)
+    assert "short | Title short" in claude.prompts[1]
+
+
+def test_queued_and_playing_videos_excluded(db):
+    for v in ("a", "b"):
+        upsert_video(db, vid(v))
+    enqueue(db, "a", "user")
+    playing = enqueue(db, "b", "user")
+    mark(db, playing, "playing")
+    claude = FakeClaude([plan(), shortlist("c"), picks(("c", "r"))])
+    run(db, claude)
+    assert "a | Title a" not in claude.prompts[1]
+    assert "b | Title b" not in claude.prompts[1]
+    assert "c | Title c" in claude.prompts[1]
+
+
+def test_account_imports_offered_before_search_results(db):
+    from src.store.settings import record_import
+
+    for v in ("liked1", "wl1", "rec1", "hist1", "played1", "nodata"):
+        if v != "nodata":
+            upsert_video(db, vid(v))
+    record_import(db, "liked", video_id="liked1")
+    record_import(db, "playlist", video_id="wl1")
+    record_import(db, "recommended", video_id="rec1")
+    record_import(db, "history", video_id="hist1")
+    record_import(db, "liked", video_id="played1")
+    record_import(db, "liked", video_id="nodata")  # not in videos: no fetch, no quota
+    end_play(db, start_play(db, "played1", None), 60, "finished")
+    claude = FakeClaude([plan(), shortlist("a"), picks(("a", "r"))])
+    run(db, claude)
+    lines = [ln.split(" | ")[0] for ln in claude.prompts[1].splitlines() if " | Title " in ln]
+    assert lines[:3] == ["liked1", "wl1", "rec1"]
+    assert "hist1" not in lines and "played1" not in lines and "nodata" not in lines
+    assert lines[3:] == ["a", "b", "c"]
+
+
+def test_account_import_candidates_capped_at_20(db):
+    from src.store.settings import record_import
+
+    for i in range(25):
+        upsert_video(db, vid(f"imp{i:02d}"))
+        record_import(db, "liked", video_id=f"imp{i:02d}")
+    claude = FakeClaude([plan(), shortlist("a"), picks(("a", "r"))])
+    run(db, claude)
+    assert sum(f"imp{i:02d} | Title" in claude.prompts[1] for i in range(25)) == 20
+
+
+@pytest.mark.parametrize("count, target, want_count, want_target", [
+    (3.0, 45.0, 3, "45"), (2.6, 30.4, 3, "30"),
+])
+def test_float_count_and_target_accepted(db, count, target, want_count, want_target):
+    raw = json.dumps({"queries": ["x"], "count": count, "target_minutes": target})
+    claude = FakeClaude([raw, shortlist("a"), picks(("a", "r"))])
+    rid, _ = run(db, claude)
+    assert get_request(db, rid).status == "done"
+    assert f"at most {want_count} videos" in claude.prompts[2]
+    assert f"listening time in minutes: {want_target}." in claude.prompts[2]
+
+
+def test_transcripts_stop_after_first_auth_error(db):
+    class CountingYt(FakeYt):
+        def __init__(self):
+            super().__init__()
+            self.tx_calls = []
+
+        def transcript(self, video_id, lang="en"):
+            self.tx_calls.append(video_id)
+            raise SourceAuthError("sign in")
+
+    yt = CountingYt()
+    claude = FakeClaude([plan(), shortlist("a", "b", "c"), picks(("a", "r"))])
+    rid, _ = run(db, claude, yt=yt)
+    assert yt.tx_calls == ["a"]
+    assert claude.prompts[2].count("(no transcript)") == 3
+    assert get_request(db, rid).status == "done"
