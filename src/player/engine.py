@@ -9,7 +9,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from typing import Callable, Literal
 
-from src.player.mpv import Mpv
+from src.player.mpv import Mpv, MpvDied
 from src.store import queue
 from src.store.queue import QueueItem
 from src.store.settings import log_event
@@ -60,8 +60,7 @@ class PlaybackEngine:
             if item is None:
                 return self._item
             self._end_current(conn, "skipped", seconds)
-            self._start(conn, item)
-            return item
+            return self._play_item(conn, item)
 
     def toggle_pause(self) -> None:
         with self._lock:
@@ -93,6 +92,9 @@ class PlaybackEngine:
             return NowPlaying(state, self._item, self._position(), self._duration())
 
     def handle_event(self, evt: dict) -> None:
+        if evt.get("event") == "mpv-died":
+            self._handle_died()
+            return
         if evt.get("event") != "end-file":
             return
         reason = evt.get("reason")
@@ -144,15 +146,45 @@ class PlaybackEngine:
         self._play_id = None
         self._item = None
 
-    def _advance(self, conn: sqlite3.Connection) -> QueueItem | None:
-        item = queue.pop_next(conn)
-        if item is None:
-            self._mpv.stop()
-            return None
-        self._start(conn, item)
-        return item
+    def _handle_died(self) -> None:
+        """mpv is gone: record the error, keep the item queued, go idle (no restart here)."""
+        with self._lock, closing(self._db_factory()) as conn:
+            item = self._item
+            self._end_current(conn, "error", 0.0)
+            if item is not None:
+                queue.mark(conn, item.id, "queued")
+            log_event(conn, COMPONENT, "error", "mpv process died")
+            logger.error("mpv process died")
 
-    def _start(self, conn: sqlite3.Connection, item: QueueItem) -> None:
-        self._play_id = start_play(conn, item.video.video_id, item.id)
+    def _advance(self, conn: sqlite3.Connection) -> QueueItem | None:
+        return self._play_item(conn, queue.pop_next(conn))
+
+    def _play_item(self, conn: sqlite3.Connection, item: QueueItem | None) -> QueueItem | None:
+        """Play `item`; a track that fails to load is logged as an error and the next is tried."""
+        while item is not None:
+            status = self._start(conn, item)
+            if status == "ok":
+                return item
+            if status == "died":
+                return None
+            item = queue.pop_next(conn)
+        self._mpv.stop()
+        return None
+
+    def _start(self, conn: sqlite3.Connection, item: QueueItem) -> str:
+        """Load `item` into mpv; engine state is only set once the load succeeded."""
+        play_id = start_play(conn, item.video.video_id, item.id)
+        try:
+            self._mpv.load(WATCH_URL.format(item.video.video_id))
+            self._mpv.set_pause(False)  # mpv keeps `pause` across loadfile
+        except Exception as exc:
+            died = isinstance(exc, MpvDied)
+            end_play(conn, play_id, 0.0, "error")
+            if died:
+                queue.mark(conn, item.id, "queued")
+            log_event(conn, COMPONENT, "error", f"load failed: {item.video.title}: {exc}")
+            logger.error("could not load %s: %s", item.video.video_id, exc)
+            return "died" if died else "failed"
+        self._play_id = play_id
         self._item = item
-        self._mpv.load(WATCH_URL.format(item.video.video_id))
+        return "ok"

@@ -8,6 +8,7 @@ import pytest
 
 from src.db import connect, migrate
 from src.player.engine import PlaybackEngine
+from src.player.mpv import MpvDied
 from src.store import queue
 from src.store.settings import recent_events
 from src.store.videos import Video, upsert_video
@@ -259,3 +260,94 @@ def test_run_forever_dispatches_events_until_stopped(engine, mpv, factory):
     mpv.push({"event": "end-file", "reason": "eof"})
     engine.run_forever(stop)
     assert engine.now().item.video.video_id == "b"
+
+
+def queue_statuses(factory):
+    conn = factory()
+    try:
+        return [r[0] for r in conn.execute("SELECT status FROM queue_items ORDER BY id")]
+    finally:
+        conn.close()
+
+
+def error_events(factory):
+    conn = factory()
+    try:
+        return [e for e in recent_events(conn) if e["component"] == "player"
+                and e["level"] == "error"]
+    finally:
+        conn.close()
+
+
+def test_load_failure_logs_error_and_plays_next(engine, mpv, factory):
+    add(factory, "a")
+    add(factory, "b")
+    mpv.load_errors[url("a")] = TimeoutError("mpv did not answer loadfile")
+    item = engine.play_next()
+    assert item.video.video_id == "b"
+    rows = plays(factory)
+    assert rows[0]["video_id"] == "a" and rows[0]["end_reason"] == "error"
+    assert rows[1]["video_id"] == "b" and rows[1]["ended_at"] is None
+    assert queue_statuses(factory) == ["played", "playing"]
+    assert engine.now().item.video.video_id == "b"
+    assert error_events(factory)
+
+
+def test_load_failure_on_last_item_goes_idle(engine, mpv, factory):
+    add(factory, "a")
+    mpv.load_errors[url("a")] = BrokenPipeError("gone")
+    assert engine.play_next() is None
+    assert engine.now().state == "idle"
+    assert "playing" not in queue_statuses(factory)
+    assert plays(factory)[0]["end_reason"] == "error"
+
+
+def test_previous_load_failure_is_not_half_applied(engine, mpv, factory):
+    add(factory, "a")
+    add(factory, "b")
+    engine.play_next()
+    engine.next()
+    mpv.pos = 1.0
+    mpv.load_errors[url("a")] = TimeoutError("slow")
+    engine.previous()
+    rows = plays(factory)
+    assert [r["video_id"] for r in rows] == ["a", "b", "a", "b"]
+    assert rows[2]["end_reason"] == "error"
+    assert engine.now().item.video.video_id == "b"
+    assert queue_statuses(factory).count("playing") == 1
+
+
+def test_mpv_died_on_load_requeues_and_stops_advancing(engine, mpv, factory):
+    add(factory, "a")
+    add(factory, "b")
+    mpv.load_errors[url("a")] = MpvDied("mpv exited")
+    assert engine.play_next() is None
+    assert engine.now().state == "idle"
+    assert len(plays(factory)) == 1  # b was not tried against a dead mpv
+    assert queue_statuses(factory) == ["queued", "queued"]
+
+
+def test_mpv_died_event_errors_play_and_requeues(engine, mpv, factory):
+    add(factory, "a")
+    add(factory, "b")
+    engine.play_next()
+    engine.handle_event({"event": "mpv-died"})
+    assert plays(factory)[0]["end_reason"] == "error"
+    assert engine.now().state == "idle"
+    assert queue_statuses(factory) == ["queued", "queued"]
+    assert error_events(factory)
+
+
+def test_mpv_died_when_idle_is_harmless(engine):
+    engine.handle_event({"event": "mpv-died"})
+    assert engine.now().state == "idle"
+
+
+def test_pause_does_not_carry_over_to_next_track(engine, mpv, factory):
+    add(factory, "a")
+    add(factory, "b")
+    engine.play_next()
+    engine.toggle_pause()
+    assert engine.now().state == "paused"
+    engine.next()
+    assert engine.now().state == "playing"

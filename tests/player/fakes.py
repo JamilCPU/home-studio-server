@@ -12,10 +12,13 @@ class FakeMpv:
         self.dur: float | None = None
         self.is_paused = False
         self.events: list[dict] = []
+        self.load_errors: dict[str, Exception] = {}  # url -> exception to raise
 
     def load(self, url: str) -> None:
         self.calls.append(("load", url))
-        self.is_paused = False
+        if url in self.load_errors:
+            raise self.load_errors[url]
+        # like real mpv, `pause` is NOT reset by a load
 
     def stop(self) -> None:
         self.calls.append(("stop",))
