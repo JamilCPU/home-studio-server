@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_MARKERS = ("usage limit", "rate limit")
 _LOGIN_MARKERS = ("/login", "not logged in", "invalid api key")
 _STDERR_SNIPPET = 200
+_SHORT_REPLY_CHARS = 300
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
@@ -72,9 +73,17 @@ def run_claude(
 
     stdout = result.stdout or ""
     stderr = result.stderr or ""
-    combined = f"{stdout}\n{stderr}".lower()
 
-    # The CLI sometimes prints limit/login messages with exit code 0.
+    # stderr is always checked. stdout is checked only when the exit code is
+    # non-zero or the reply is a short one-liner (the CLI prints limit/login
+    # messages that way, sometimes with exit 0); long replies are agent
+    # output and may legitimately mention these phrases.
+    scanned = stderr
+    if result.returncode != 0 or len(stdout.strip()) < _SHORT_REPLY_CHARS:
+        scanned = f"{stdout}
+{stderr}"
+    combined = scanned.lower()
+
     if any(m in combined for m in _RATE_LIMIT_MARKERS):
         raise ClaudeRateLimited("Claude usage or rate limit reached")
     if any(m in combined for m in _LOGIN_MARKERS):
