@@ -31,14 +31,14 @@ def ensure_videos(
             fetched = data_api.video_details(missing)
         except QuotaExceeded:
             logger.warning("Data API quota exhausted; using yt-dlp for %d ids", len(missing))
-            fetched = []
             for video_id in missing:
                 try:
-                    fetched.append(ytdlp.metadata(video_id))
+                    upsert_video(conn, ytdlp.metadata(video_id))
                 except SourceAuthError:
                     raise
                 except SourceError as exc:
                     logger.warning("yt-dlp metadata failed for %s: %s", video_id, exc)
+            fetched = []
         for video in fetched:
             upsert_video(conn, video)
     found = (get_video(conn, i) for i in unique)
@@ -68,6 +68,10 @@ def ensure_chapters(conn: sqlite3.Connection, video_id: str, ytdlp: YtDlp) -> No
         return
     try:
         fetched = ytdlp.metadata(video_id)
+    except SourceAuthError:
+        logger.warning("chapters unavailable for %s: auth required", video_id)
+        log_event(conn, "ytdlp", "error", "SourceAuthError: cookies or sign-in check")
+        return
     except SourceError as exc:
         logger.warning("could not fetch chapters for %s: %s", video_id, exc)
         log_event(conn, COMPONENT, "warn", f"chapters unavailable for {video_id}")

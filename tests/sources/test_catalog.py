@@ -105,3 +105,20 @@ def test_ensure_chapters_swallows_source_error(db):
     catalog.ensure_chapters(db, "v", FakeYt(fail={"v": SourceError("boom")}))
     assert get_video(db, "v").chapters == ()
     assert len(recent_events(db)) == 1
+
+
+def test_ensure_chapters_auth_error_logged_not_raised(db):
+    upsert_video(db, vid("v"))
+    catalog.ensure_chapters(db, "v", FakeYt(fail={"v": SourceAuthError("cookies at http://x")}))
+    ev = recent_events(db)[0]
+    assert (ev["component"], ev["level"]) == ("ytdlp", "error")
+    assert ev["message"].startswith("SourceAuthError:")
+    assert "http" not in ev["message"] and "cookies at" not in ev["message"]
+
+
+def test_fallback_keeps_earlier_fetches_on_auth_error(db):
+    yt = FakeYt(fail={"b": SourceAuthError("cookies")})
+    with pytest.raises(SourceAuthError):
+        catalog.ensure_videos(db, ["a", "b"], FakeApi(QuotaExceeded("x")), yt)
+    assert get_video(db, "a") is not None
+    assert get_video(db, "b") is None
