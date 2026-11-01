@@ -1,7 +1,7 @@
 # Personal Listening Station: Design
 
 **Date:** 2026-11-01
-**Status:** Draft, source of truth for this work
+**Status:** Approved 2026-11-01, source of truth for this work
 **Product name:** TBD (rebrand of YoutubeBrainwash + AlarmAPI)
 
 This document comes out of a design conversation with Jamil and **supersedes
@@ -238,22 +238,29 @@ a later need appears. *(builder's call)*
    - quick 👍 / 👎 and **Rate** button
    - "Open in YouTube at <current time>" link
 2. **Rate**: sheet with like/dislike, 1–10 satisfaction, notes (typed or
-   phone-keyboard dictation). *(sketched; not yet confirmed by Jamil)*
+   phone-keyboard dictation). *(approved)*
 3. **Agent** (decided, main entry point): a prompt box for requests, an
    "agent working…" state, the result (what was queued and why), and past
    requests.
 4. **Queue**: upcoming items tagged AI pick / you added / morning, with
-   "why" text; Search/add. *(sketched; not confirmed)*
-5. **History**: everything played + ratings. *(sketched; not confirmed)*
+   "why" text; Search/add. *(approved)*
+5. **History**: everything played + ratings. *(approved)*
 6. **Taste**: the AI's plain-language view of their taste, which they can
-   correct. *(sketched; not confirmed)*
+   correct. *(approved)*
 7. **Morning** (settings): wake time (default 7:45 CT), days, topic areas,
    on/off.
 
 Plus: a **media notification** with play/pause/skip and 👍/👎 so a quick
 rating doesn't need the app open. *(builder's idea)*
 
-Mockups from the session: Now Playing v2 is the approved layout.
+Mockups from the session (approved): Now Playing v2 plus the all-screens pass.
+Bottom tabs: **Now · Agent · Queue · History · Taste**; Morning settings behind ⚙.
+- Agent: chat-style; request → "working…" → queued list + why → Play now / Add to end; suggestion chips.
+- Queue: source tags (Agent / You added / Morning), drag to reorder, swipe to remove, "ends in X, then stops".
+- Rate: opens from Now Playing, History, or notification.
+- History: grouped by day, score or "skipped at m:ss", Unrated filter.
+- Taste: AI summary + Likes/Dislikes lists (✕ to remove) + free-text correction.
+- Morning: on/off, time, days, topic chips, count, readiness status, "Test it now".
 
 ---
 
@@ -299,7 +306,7 @@ with seek, not a video player · build on YoutubeBrainwash (server) and
 AlarmAPI (hub, alarm as a feature) · this doc is the source of truth.
 
 ## 8. Open questions (Jamil's)
-1. Confirm Rate, Queue, Agent, History, Taste screens (redraw pending).
+None. Design approved.
 
 ## 9. Later
 - Simple browsing of YouTube inside the phone app.
