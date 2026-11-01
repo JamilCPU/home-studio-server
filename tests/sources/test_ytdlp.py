@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from yt_dlp.networking.exceptions import HTTPError, TransportError
 from yt_dlp.utils import DownloadError
 
 from src.sources.ytdlp import SourceAuthError, SourceError, YtDlp
@@ -29,7 +30,9 @@ class FakeYdl:
 
     def urlopen(self, url):
         self._owner.fetched.append(url)
-        payload = json.dumps(self._owner.json3[url]).encode()
+        if url in self._owner.url_errors:
+            raise self._owner.url_errors[url]
+        payload = self._owner.raw.get(url) or json.dumps(self._owner.json3[url]).encode()
 
         class _Resp:
             def read(_self):
@@ -45,6 +48,8 @@ class Factory:
         self.opts: list[dict] = []
         self.urls: list[str] = []
         self.fetched: list[str] = []
+        self.url_errors: dict[str, Exception] = {}
+        self.raw: dict[str, bytes] = {}
 
     def __call__(self, opts):
         self.opts.append(opts)
@@ -179,3 +184,43 @@ def test_transcript_none_without_tracks():
     f = Factory(info={"subtitles": {}, "automatic_captions": {}})
     assert _ytdlp(f).transcript("v") is None
     assert f.fetched == []
+
+
+class _Resp:
+    def __init__(self, status):
+        self.status, self.reason, self.url, self.headers = status, "x", "u", {}
+
+    def close(self):
+        pass
+
+
+_TRACK = {"automatic_captions": {"en": [{"ext": "json3", "url": "a"}]}}
+
+
+def test_transcript_http_429_is_source_error():
+    f = Factory(info=_TRACK)
+    f.url_errors["a"] = HTTPError(_Resp(429))
+    with pytest.raises(SourceError) as ei:
+        _ytdlp(f).transcript("v")
+    assert not isinstance(ei.value, SourceAuthError)
+
+
+def test_transcript_http_403_is_auth_error():
+    f = Factory(info=_TRACK)
+    f.url_errors["a"] = HTTPError(_Resp(403))
+    with pytest.raises(SourceAuthError):
+        _ytdlp(f).transcript("v")
+
+
+def test_transcript_network_failure_is_source_error():
+    f = Factory(info=_TRACK)
+    f.url_errors["a"] = TransportError("down")
+    with pytest.raises(SourceError):
+        _ytdlp(f).transcript("v")
+
+
+def test_transcript_non_json_body_is_source_error():
+    f = Factory(info=_TRACK)
+    f.raw["a"] = b"<html>nope</html>"
+    with pytest.raises(SourceError):
+        _ytdlp(f).transcript("v")

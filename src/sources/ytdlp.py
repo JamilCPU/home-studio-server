@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import yt_dlp
+from yt_dlp.networking.exceptions import HTTPError, RequestError
 from yt_dlp.utils import DownloadError, ExtractorError
 
 from src.store.videos import Chapter, Video
@@ -202,5 +203,11 @@ class YtDlp:
                 logger.warning("yt-dlp needs authentication")
                 raise SourceAuthError(message) from exc
             raise SourceError(message) from exc
+        except RequestError as exc:
+            status = exc.status if isinstance(exc, HTTPError) else None
+            if status in (401, 403):
+                logger.warning("yt-dlp request refused (HTTP %s)", status)
+                raise SourceAuthError(f"HTTP {status}") from exc
+            raise SourceError(f"request failed: {type(exc).__name__}") from exc
         except (OSError, ValueError) as exc:
             raise SourceError(str(exc)) from exc
