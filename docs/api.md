@@ -127,6 +127,8 @@ and `notes` may be `null`.
 {
   "id": 9,
   "prompt": "something about GPU memory",
+  "kind": "user",
+  "play": "now",
   "status": "done",
   "summary": "Queued two deep dives on GPU memory",
   "error": null,
@@ -136,6 +138,8 @@ and `notes` may be `null`.
 }
 ```
 
+`kind` is `"user"` (asked through the API) or `"morning"` (the morning set, scheduled or
+`/api/morning/test`). `play` is `"now"` or `"end"`, as requested.
 `status` is `"pending"`, `"running"`, `"done"` or `"failed"`. On `"failed"`, `error` holds a
 readable reason. `summary`, `error` and `finished_at` are `null` until set. `items` are every queue
 item the request added, in queue order (including ones already played or removed).
@@ -148,11 +152,28 @@ item the request added, in queue order (including ones already played or removed
   "wake_time": "07:45",
   "days": [0, 1, 2, 3, 4, 5, 6],
   "topics": ["technology", "AI", "hardware", "engineering", "news/politics"],
-  "count": 3
+  "count": 3,
+  "build_lead_min": 5,
+  "next_build_at": "2026-11-02T07:40:00-06:00",
+  "last_outcome": {"date": "2026-11-01", "built": true, "fallback": false, "started": true,
+                   "request_id": 14, "status": "done"}
 }
 ```
 
-`days` are weekdays, `0` = Monday … `6` = Sunday.
+`days` are weekdays, `0` = Monday … `6` = Sunday. The agent builds the set `build_lead_min`
+minutes before `wake_time` (the build may start any time in the 3 minutes after that) and
+playback starts at `wake_time`.
+
+`next_build_at` and `last_outcome` are read-only (sent back, ignored on PUT):
+
+- `next_build_at`: when the next build starts, ISO 8601 in the station's local time zone with its
+  offset; `null` when the morning is disabled or no day is selected. Today's build counts until its
+  window has passed or it has run.
+- `last_outcome`: the latest morning request, or `null` if there has never been one. `date` is its
+  local date; `built` is `true` when the agent's picks were queued (`status` `"done"`); `fallback`
+  is `true` when the fallback set (unplayed imports, then favourites) was queued instead or as well;
+  `started` is `true` when the scheduled start ran that day (a manual `/api/morning/test` does not
+  set it); `request_id` and `status` are the request's (poll `/api/agent/requests/{id}` for more).
 
 ---
 
@@ -173,7 +194,8 @@ Response `200`:
 
 ### POST /api/player/toggle
 
-Pause or resume. Does nothing when idle. No body.
+Pause or resume. When idle, starts the queue from its first item (like `next`); does nothing
+when idle with an empty queue. No body.
 
 Response `200`: NowPlaying.
 
@@ -336,7 +358,9 @@ Errors: `400` `"q must not be empty"` / `"q must be at most 200 characters"`; `5
 
 ### POST /api/ratings
 
-Rate a video. Every rating is kept; history shows the latest. At least one of `liked`,
+Rate a video. Each POST creates a new rating; the displayed rating (in history) is the latest
+one, not merged with earlier ones: fields you leave out are `null` in the new rating, not carried
+over. To change only the notes, send `liked` and `satisfaction` again too. At least one of `liked`,
 `satisfaction` or `notes` is required. The video must be known to the server (played, queued or
 searched).
 
@@ -396,7 +420,9 @@ Response `200`:
 ### POST /api/taste/corrections
 
 Tell the agent something about your taste in plain words. Saved now; the profile is refreshed in
-the background (poll GET `/api/taste`).
+the background by Claude. Poll GET `/api/taste` until `updated_at` changes, and watch
+`/api/status` `claude`: if it is not `"ok"` the refresh failed (the correction stays saved and is
+applied on the next successful refresh). Give up after about 60 s.
 
 Request:
 
@@ -466,7 +492,7 @@ One request with the items it queued.
 Response `200`: AgentRequestOut.
 
 ```json
-{"ok": true, "data": {"id": 9, "prompt": "something about GPU memory", "status": "running", "summary": null, "error": null, "items": [], "created_at": "2026-11-01T14:00:00+00:00", "finished_at": null}, "error": null}
+{"ok": true, "data": {"id": 9, "prompt": "something about GPU memory", "kind": "user", "play": "now", "status": "running", "summary": null, "error": null, "items": [], "created_at": "2026-11-01T14:00:00+00:00", "finished_at": null}, "error": null}
 ```
 
 Errors: `404` `"request not found"`.
@@ -480,7 +506,7 @@ Query: `limit` (1–100, default 20). Example: `/api/agent/requests?limit=10`.
 Response `200`:
 
 ```json
-{"ok": true, "data": {"requests": [{"id": 9, "prompt": "something about GPU memory", "status": "done", "summary": "Queued two deep dives", "error": null, "items": [], "created_at": "2026-11-01T14:00:00+00:00", "finished_at": "2026-11-01T14:01:10+00:00"}]}, "error": null}
+{"ok": true, "data": {"requests": [{"id": 9, "prompt": "something about GPU memory", "kind": "user", "play": "now", "status": "done", "summary": "Queued two deep dives", "error": null, "items": [], "created_at": "2026-11-01T14:00:00+00:00", "finished_at": "2026-11-01T14:01:10+00:00"}]}, "error": null}
 ```
 
 Errors: `422` for an out-of-range `limit`.
@@ -492,12 +518,13 @@ Errors: `422` for an out-of-range `limit`.
 Response `200`: MorningSettings.
 
 ```json
-{"ok": true, "data": {"enabled": true, "wake_time": "07:45", "days": [0, 1, 2, 3, 4, 5, 6], "topics": ["technology", "AI", "hardware", "engineering", "news/politics"], "count": 3}, "error": null}
+{"ok": true, "data": {"enabled": true, "wake_time": "07:45", "days": [0, 1, 2, 3, 4, 5, 6], "topics": ["technology", "AI", "hardware", "engineering", "news/politics"], "count": 3, "build_lead_min": 5, "next_build_at": "2026-11-02T07:40:00-06:00", "last_outcome": null}, "error": null}
 ```
 
 ### PUT /api/morning
 
-Replace the morning settings. All fields are required.
+Replace the morning settings. All fields are required except `build_lead_min` (left out: the
+current value is kept).
 
 Request:
 
@@ -512,16 +539,22 @@ Request:
 | `days` | int[] | each 0–6, at most 7 |
 | `topics` | string[] | at least 1, at most 20, each 1–100 characters |
 | `count` | int | 1–6 |
+| `build_lead_min` | int | optional, 1–60 (default 5): minutes before `wake_time` the build starts |
 
-Response `200`: the saved MorningSettings.
+Response `200`: the saved MorningSettings (with `next_build_at` and `last_outcome`).
 
 Errors: `422`, e.g. `"wake_time: String should match pattern '^\d{2}:\d{2}$'"`,
 `"wake_time must be HH:MM (24-hour)"`, `"topics must not be empty"`, `"count: Input should be less than or equal to 6"`.
 
 ### POST /api/morning/test
 
-Build and start a morning set right now. No body. Poll GET `/api/agent/requests/{id}` with the
-returned id.
+Build a morning set now and start playback unless something is actively playing. A paused item
+is stopped and goes back into the queue behind the morning items; something playing is left alone
+(the set is still queued). If the agent fails, the fallback set is queued instead. No body. Poll
+GET `/api/agent/requests/{id}` with the returned id.
+
+The scheduled morning works the same way at `wake_time`: if the start fails (for example mpv is
+restarting) it is retried every 20 s for 10 minutes.
 
 Response `202`:
 
@@ -545,6 +578,7 @@ Response `200`:
     "bluetooth": "connected",
     "cookies": "ok",
     "claude": "ok",
+    "source": "ok",
     "ytdlp_version": "2026.03.17",
     "quota_used_today": 300,
     "quota_ceiling": 9500,
@@ -560,8 +594,9 @@ Response `200`:
 |---|---|
 | `player` | `"playing"`, `"paused"`, `"idle"`, or `"unavailable"` when mpv is down |
 | `bluetooth` | `"connected"`, `"disconnected"`, `"unconfigured"` (no speaker set) |
-| `cookies` | `"ok"`; `"missing"` (no cookies file); `"expired"` (YouTube's last answer was a sign-in / "not a bot" check; re-export cookies) |
+| `cookies` | `"ok"`; `"missing"` (no cookies file); `"expired"` (YouTube's last answer was a sign-in / "not a bot" check, made after the cookies file was last written; re-export the cookies and it clears, as does the next successful account import) |
 | `claude` | `"ok"`, `"rate_limited"`, `"not_logged_in"` (run `claude login` on the Pi), `"missing"` (CLI not installed), `"unknown"` (no agent run yet) |
+| `source` | `"ok"`, or `"broken"` after 3 playback errors in a row (the player stopped advancing so the queue is not drained; the failing item is back at the front). Clears on the next successful play. Usually stale yt-dlp or cookies |
 | `ytdlp_version` | installed yt-dlp version string |
 | `quota_used_today` | YouTube Data API units used today (the quota day is the Pacific-time date) |
 | `quota_ceiling` | the server stops using the Data API at this many units |

@@ -14,7 +14,10 @@ MORNING = {"enabled": True, "wake_time": "06:30", "days": [0, 1, 2, 3, 4],
 def test_get_morning_defaults(api):
     resp = api.client.get("/api/morning")
     assert resp.status_code == 200
-    assert resp.json()["data"] == {
+    data = resp.json()["data"]
+    assert data.pop("last_outcome") is None
+    assert data.pop("next_build_at").endswith(("-05:00", "-06:00"))  # America/Chicago
+    assert data == {
         "enabled": True, "wake_time": "07:45", "days": [0, 1, 2, 3, 4, 5, 6],
         "topics": ["technology", "AI", "hardware", "engineering", "news/politics"], "count": 3,
         "build_lead_min": 5,
@@ -30,6 +33,21 @@ def test_put_morning(api):
     assert resp.status_code == 200
     assert _settings(resp.json()["data"]) == MORNING
     assert _settings(api.client.get("/api/morning").json()["data"]) == MORNING
+
+
+def test_morning_next_build_null_when_disabled(api):
+    data = api.client.put("/api/morning", json={**MORNING, "enabled": False}).json()["data"]
+    assert data["next_build_at"] is None
+
+
+def test_morning_last_outcome_shape(api):
+    from src.store.agent import create_request
+
+    with api.conn() as conn:
+        rid = create_request(conn, "m", "morning", "end")
+    outcome = api.client.get("/api/morning").json()["data"]["last_outcome"]
+    assert set(outcome) == {"date", "built", "fallback", "started", "request_id", "status"}
+    assert (outcome["request_id"], outcome["status"]) == (rid, "pending")
 
 
 def test_put_morning_build_lead(api):

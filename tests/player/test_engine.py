@@ -228,10 +228,21 @@ def test_stop_ends_play_and_requeues_item(engine, mpv, factory):
         conn.close()
 
 
+def test_toggle_when_idle_with_empty_queue_is_noop(engine, mpv):
+    engine.toggle_pause()
+    assert mpv.calls == [] and engine.now().state == "idle"
+
+
+def test_toggle_when_idle_starts_the_queue(engine, mpv, factory):
+    add(factory, "a")
+    engine.toggle_pause()
+    now = engine.now()
+    assert (now.state, now.item.video.video_id) == ("playing", "a")
+    assert mpv.calls_named("load") == [("load", url("a"))]
+
+
 def test_toggle_pause_and_now_state(engine, mpv, factory):
     add(factory, "a", duration_s=300)
-    engine.toggle_pause()  # idle: no-op
-    assert not mpv.calls_named("set_pause")
     engine.play_next()
     mpv.pos = 12.5
     engine.toggle_pause()

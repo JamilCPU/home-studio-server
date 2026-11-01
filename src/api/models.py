@@ -77,6 +77,8 @@ def request_out(r: AgentRequest, items: list[QueueItem]) -> dict[str, Any]:
     return {
         "id": r.id,
         "prompt": r.prompt,
+        "kind": r.kind,
+        "play": r.play,
         "status": r.status,
         "summary": r.summary,
         "error": r.error,
