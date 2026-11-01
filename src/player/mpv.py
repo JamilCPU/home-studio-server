@@ -18,6 +18,14 @@ CONNECT_TIMEOUT_S = 5.0
 REPLY_TIMEOUT_S = 5.0
 
 
+class MpvDied(Exception):
+    """The mpv process or its socket is gone."""
+
+
+class MpvCommandError(Exception):
+    """mpv answered a command with an error."""
+
+
 class Mpv(Protocol):
     def load(self, url: str) -> None: ...
 
@@ -45,6 +53,8 @@ class MpvIpc:
         self._send_lock = threading.Lock()
         self._pending: dict[int, queue.Queue] = {}
         self._events: queue.Queue = queue.Queue()
+        self._dead = False
+        self._closed = False
         self._socket_path.unlink(missing_ok=True)
         self._proc = subprocess.Popen(
             [
@@ -83,6 +93,8 @@ class MpvIpc:
                     msg = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(msg, dict):
+                    continue
                 waiter = self._pending.pop(msg["request_id"], None) if "request_id" in msg else None
                 if waiter is not None:
                     waiter.put(msg)
@@ -90,22 +102,46 @@ class MpvIpc:
                     self._events.put(msg)
         except OSError:
             logger.warning("mpv socket closed")
+        finally:
+            self._mark_dead()
 
-    def _command(self, *args: Any) -> dict:
+    def _mark_dead(self) -> None:
+        """Fail every waiting command now and tell the engine through a sentinel event."""
+        self._dead = True
+        for request_id in list(self._pending):
+            waiter = self._pending.pop(request_id, None)
+            if waiter is not None:
+                waiter.put(MpvDied("mpv exited"))
+        self._events.put({"event": "mpv-died"})
+
+    def _command(self, *args: Any, check: bool = True) -> dict:
+        if self._dead:
+            raise MpvDied("mpv exited")
         request_id = next(self._ids)
         waiter: queue.Queue = queue.Queue(maxsize=1)
         self._pending[request_id] = waiter
+        if self._dead:  # the reader died between the check and registering
+            self._pending.pop(request_id, None)
+            raise MpvDied("mpv exited")
         payload = json.dumps({"command": list(args), "request_id": request_id}) + "\n"
-        with self._send_lock:
-            self._sock.sendall(payload.encode("utf-8"))
         try:
-            return waiter.get(timeout=REPLY_TIMEOUT_S)
+            with self._send_lock:
+                self._sock.sendall(payload.encode("utf-8"))
+            reply = waiter.get(timeout=REPLY_TIMEOUT_S)
+        except OSError as exc:
+            self._pending.pop(request_id, None)
+            raise MpvDied(str(exc)) from exc
         except queue.Empty:
             self._pending.pop(request_id, None)
             raise TimeoutError(f"mpv did not answer {args[0]}") from None
+        if isinstance(reply, Exception):
+            raise reply
+        if check and reply.get("error") != "success":
+            raise MpvCommandError(f"{args[0]} failed: {reply.get('error')}")
+        return reply
 
     def _property(self, name: str) -> Any:
-        reply = self._command("get_property", name)
+        reply = self._command("get_property", name, check=False)
         return reply.get("data") if reply.get("error") == "success" else None
 
     def load(self, url: str) -> None:
@@ -136,5 +172,11 @@ class MpvIpc:
             return None
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._proc.terminate()
-        self._sock.close()
+        try:
+            self._sock.close()
+        except OSError:
+            pass
