@@ -17,12 +17,12 @@ def raw(tmp_path):
 
 
 def test_migrate_fresh_returns_latest(raw):
-    assert migrate(raw) == 2
+    assert migrate(raw) == 3
 
 
 def test_migrate_is_idempotent(raw):
     migrate(raw)
-    assert migrate(raw) == 2
+    assert migrate(raw) == 3
     assert raw.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 1
 
 
@@ -61,3 +61,9 @@ def test_new_columns_have_defaults(db):
     cols = {r["name"]: r for r in db.execute("PRAGMA table_info(videos)")}
     assert cols["chapters_checked"]["dflt_value"] == "0"
 
+
+
+def test_build_lead_column_defaults_and_range(db):
+    assert db.execute("SELECT build_lead_min FROM morning_settings").fetchone()[0] == 5
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("UPDATE morning_settings SET build_lead_min = 61")

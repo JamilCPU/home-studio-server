@@ -379,3 +379,20 @@ def test_empty_morning_retries_without_repeating_fallback(factory, monkeypatch):
     enqueue(factory(), "m1", "morning")  # a slow build finished
     assert sched.tick(at(2026, 5, 6, 7, 45, 40)) == ["started"]
     assert engine.played == 1
+
+
+def test_build_lead_is_configurable(factory):
+    conn = factory()
+    save_morning(conn, MorningSettings(True, "07:45", ALL_DAYS, ("technology",), 3, 20))
+    runner = Runner(["m1"])
+    sched, _ = make(factory, runner)
+    assert sched.tick(at(2026, 5, 6, 7, 24, 59)) == []
+    assert build(sched, at(2026, 5, 6, 7, 25)) == ["built"]
+    assert sched.tick(at(2026, 5, 6, 7, 28)) == []
+
+
+def test_build_window_ends_three_minutes_after_lead(factory):
+    conn = factory()
+    save_morning(conn, MorningSettings(True, "07:45", ALL_DAYS, ("technology",), 3, 20))
+    sched, _ = make(factory, Runner(["m1"]))
+    assert build(sched, at(2026, 5, 6, 7, 27, 59)) == ["built"]

@@ -88,4 +88,4 @@ def request_out(r: AgentRequest, items: list[QueueItem]) -> dict[str, Any]:
 
 def morning_out(s: MorningSettings) -> dict[str, Any]:
     return {"enabled": s.enabled, "wake_time": s.wake_time, "days": list(s.days),
-            "topics": list(s.topics), "count": s.count}
+            "topics": list(s.topics), "count": s.count, "build_lead_min": s.build_lead_min}
