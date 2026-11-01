@@ -28,15 +28,26 @@ def vid(video_id, duration_s=600):
 
 
 class FakeEngine:
-    def __init__(self, state="idle"):
+    def __init__(self, state="idle", fail_plays=0):
         self.state = state
         self.played = 0
+        self.stopped = 0
+        self.fail_plays = fail_plays  # play_next returns None this many times first
 
     def now(self):
         return NowPlaying(self.state, None, 0.0, None)
 
+    def stop(self):
+        self.stopped += 1
+        self.state = "idle"
+
     def play_next(self):
         self.played += 1
+        if self.fail_plays:
+            self.fail_plays -= 1
+            return None
+        self.state = "playing"
+        return object()
 
 
 class Runner:
@@ -321,3 +332,50 @@ def test_daily_import_failure_does_not_break_tick(factory):
 
     sched = MorningScheduler(factory, run_request_fn=Runner(), engine=FakeEngine(), import_fn=boom)
     assert import_tick(sched, at(2026, 5, 6, 4, 0)) == ["imported"]
+
+
+def test_paused_item_is_stopped_and_morning_plays_first(factory):
+    from tests.player.fakes import FakeMpv
+    from src.player.engine import PlaybackEngine
+
+    mpv = FakeMpv()
+    engine = PlaybackEngine(factory, mpv)
+    conn = factory()
+    enqueue(conn, "o1", "user")
+    engine.play_next()
+    mpv.is_paused = True
+    assert engine.now().state == "paused"
+    sched, _ = make(factory, Runner(["m1", "m2"]), engine)
+    build(sched, at(2026, 5, 6, 7, 40))
+    assert sched.tick(at(2026, 5, 6, 7, 45, 5)) == ["started"]
+    now = engine.now()
+    assert (now.state, now.item.video.video_id) == ("playing", "m1")
+    assert [i.video.video_id for i in upcoming(factory())] == ["m2", "o1"]
+
+
+def test_failed_start_is_retried_within_window(factory):
+    engine = FakeEngine(fail_plays=1)
+    sched, _ = make(factory, Runner(["m1"]), engine)
+    build(sched, at(2026, 5, 6, 7, 40))
+    assert sched.tick(at(2026, 5, 6, 7, 45)) == []
+    assert not event_logged(factory(), "started:2026-05-06")
+    assert sched.tick(at(2026, 5, 6, 7, 45, 20)) == ["started"]
+    assert engine.played == 2
+    assert event_logged(factory(), "started:2026-05-06")
+    assert sched.tick(at(2026, 5, 6, 7, 45, 40)) == []
+    assert engine.played == 2
+
+
+def test_empty_morning_retries_without_repeating_fallback(factory, monkeypatch):
+    import src.scheduler as mod
+
+    calls = []
+    monkeypatch.setattr(mod, "fallback_morning", lambda conn, count: calls.append(count) or [])
+    log_event(factory(), "scheduler", "info", "built:2026-05-06")
+    sched, engine = make(factory, Runner([]))
+    assert sched.tick(at(2026, 5, 6, 7, 45)) == []
+    assert sched.tick(at(2026, 5, 6, 7, 45, 20)) == []
+    assert len(calls) == 1
+    enqueue(factory(), "m1", "morning")  # a slow build finished
+    assert sched.tick(at(2026, 5, 6, 7, 45, 40)) == ["started"]
+    assert engine.played == 1
