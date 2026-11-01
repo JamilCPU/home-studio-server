@@ -594,7 +594,7 @@ Response `200`:
 |---|---|
 | `player` | `"playing"`, `"paused"`, `"idle"`, or `"unavailable"` when mpv is down |
 | `bluetooth` | `"connected"`, `"disconnected"`, `"unconfigured"` (no speaker set) |
-| `cookies` | `"ok"`; `"missing"` (no cookies file); `"expired"` (YouTube's last answer was a sign-in / "not a bot" check, made after the cookies file was last written; re-export the cookies and it clears, as does the next successful account import) |
+| `cookies` | `"ok"`; `"missing"` (no cookies file, or a file with no non-expired YouTube sign-in cookies, i.e. "not signed in"; yt-dlp and mpv create anonymous-only files themselves); `"expired"` (YouTube's last answer was a sign-in / "not a bot" check, made after the cookies file was last written; re-export the cookies and it clears, as does the next successful account import) |
 | `claude` | `"ok"`, `"rate_limited"`, `"not_logged_in"` (run `claude login` on the Pi), `"missing"` (CLI not installed), `"unknown"` (no agent run yet) |
 | `source` | `"ok"`, or `"broken"` after 3 playback errors in a row (the player stopped advancing so the queue is not drained; the failing item is back at the front). Clears on the next successful play. Usually stale yt-dlp or cookies |
 | `ytdlp_version` | installed yt-dlp version string |
