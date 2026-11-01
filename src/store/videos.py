@@ -136,6 +136,19 @@ def set_transcript(conn: sqlite3.Connection, video_id: str, text: str) -> None:
     conn.commit()
 
 
+def chapters_checked(conn: sqlite3.Connection, video_id: str) -> bool:
+    """True once chapters were looked up for this video (found or not)."""
+    row = conn.execute(
+        "SELECT chapters_checked FROM videos WHERE video_id = ?", (video_id,)
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def mark_chapters_checked(conn: sqlite3.Connection, video_id: str) -> None:
+    conn.execute("UPDATE videos SET chapters_checked = 1 WHERE video_id = ?", (video_id,))
+    conn.commit()
+
+
 def start_play(conn: sqlite3.Connection, video_id: str, queue_item_id: int | None) -> int:
     cur = conn.execute(
         "INSERT INTO plays (video_id, queue_item_id, started_at) VALUES (?, ?, ?)",

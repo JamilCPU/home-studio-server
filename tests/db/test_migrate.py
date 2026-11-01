@@ -16,13 +16,13 @@ def raw(tmp_path):
     conn.close()
 
 
-def test_migrate_fresh_returns_1(raw):
-    assert migrate(raw) == 1
+def test_migrate_fresh_returns_latest(raw):
+    assert migrate(raw) == 2
 
 
 def test_migrate_is_idempotent(raw):
     migrate(raw)
-    assert migrate(raw) == 1
+    assert migrate(raw) == 2
     assert raw.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 1
 
 
@@ -55,3 +55,9 @@ def test_satisfaction_out_of_range_rejected(db):
 def test_foreign_keys_enforced(db):
     with pytest.raises(sqlite3.IntegrityError):
         db.execute("INSERT INTO ratings (video_id, liked, created_at) VALUES ('x', 1, 'now')")
+
+
+def test_new_columns_have_defaults(db):
+    cols = {r["name"]: r for r in db.execute("PRAGMA table_info(videos)")}
+    assert cols["chapters_checked"]["dflt_value"] == "0"
+

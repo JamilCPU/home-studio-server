@@ -260,6 +260,32 @@ def test_chapters_hook_fills_chapters_on_own_connection(tmp_path):
         assert get_video(conn, "abc").chapters == (Chapter("Intro", 0.0),)
 
 
+def _play_and_wait(engine):
+    engine.play_next()
+    engine._hook_thread.join(timeout=5)
+
+
+def test_engine_hook_fills_now_playing_and_caches_no_chapters(tmp_path):
+    from src.player.engine import PlaybackEngine
+
+    path = tmp_path / "h.db"
+    with closing(connect(path)) as conn:
+        migrate(conn)
+        upsert_video(conn, vid("abc"))
+        upsert_video(conn, vid("def"))
+        for v in ("abc", "def", "def"):
+            queue.enqueue(conn, v, "user")
+    factory = lambda: connect(path)  # noqa: E731
+    yt = FakeYt(chapters=(Chapter("Intro", 0.0),))
+    engine = PlaybackEngine(factory, FakeMpv(), on_started=chapters_hook(factory, yt))
+    _play_and_wait(engine)
+    assert engine.now().item.video.chapters == (Chapter("Intro", 0.0),)
+    yt.chapters = ()
+    _play_and_wait(engine)  # def: no chapters found
+    _play_and_wait(engine)  # def again: not fetched a second time
+    assert yt.meta_calls == ["abc", "def"]
+
+
 def test_main_migrate_legacy(tmp_path, capsys):
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.dump({"db": {"path": "data/x.db"}}), encoding="utf-8")
