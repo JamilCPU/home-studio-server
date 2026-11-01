@@ -80,8 +80,7 @@ def run_claude(
     # output and may legitimately mention these phrases.
     scanned = stderr
     if result.returncode != 0 or len(stdout.strip()) < _SHORT_REPLY_CHARS:
-        scanned = f"{stdout}
-{stderr}"
+        scanned = stdout + " " + stderr
     combined = scanned.lower()
 
     if any(m in combined for m in _RATE_LIMIT_MARKERS):
