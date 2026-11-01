@@ -187,43 +187,23 @@ def _cmd_curate(config) -> None:
 
 
 def _cmd_serve(config, args) -> None:
-    """Start the FastAPI server."""
-    from src.api import start_server
-
-    host = args.host or config.api_host
-    port = args.port or config.api_port
-    start_server(host=host, port=port)
+    """Removed; replaced by the new server."""
+    _removed()
 
 
 def _cmd_play(config, args) -> None:
-    """Start playback."""
-    from src.player import play_video
-
-    video_id = args.video_id
-    if not video_id:
-        if not CURRENT_FEED_PATH.exists():
-            log.error("No feed available. Run 'brainwash curate' first.")
-            sys.exit(1)
-        with open(CURRENT_FEED_PATH) as f:
-            feed = json.load(f)
-        if not feed:
-            log.error("Feed is empty.")
-            sys.exit(1)
-        video_id = feed[0]["video_id"]
-        log.info("Playing top video: %s", feed[0]["title"])
-
-    success = play_video(video_id, snap_fifo=config.snap_fifo)
-    if not success:
-        log.error("Failed to start playback")
-        sys.exit(1)
+    """Removed; replaced by the new server."""
+    _removed()
 
 
 def _cmd_stop() -> None:
-    """Stop playback."""
-    from src.player import stop_playback
+    """Removed; replaced by the new server."""
+    _removed()
 
-    stop_playback()
-    log.info("Playback stopped")
+
+def _removed() -> None:
+    log.error("This command was removed; replaced by the new server")
+    sys.exit(1)
 
 
 def _cmd_feed() -> None:
