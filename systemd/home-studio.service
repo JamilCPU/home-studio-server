@@ -1,0 +1,17 @@
+[Unit]
+Description=Home Studio server (player, agent, scheduler, REST API)
+After=network-online.target pipewire.service wireplumber.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jamil/home-studio
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+ExecStart=/home/jamil/home-studio/.venv/bin/python -m src --config config.yaml serve
+Restart=on-failure
+RestartSec=5
+Nice=5
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

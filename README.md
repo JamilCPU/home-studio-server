@@ -20,3 +20,40 @@ Design: [docs/superpowers/specs/2026-11-01-listening-station-design.md](docs/sup
     python -m pytest -q
 
 The API listens on port 8765 by default.
+
+## Deploying to the Pi
+
+From WSL on the Windows PC (the host is never committed):
+
+    HOME_STUDIO_HOST=user@pi-host bash scripts/deploy-pi3.sh
+
+The first run installs packages, creates `~/home-studio/{.venv,secrets,data}`,
+installs the systemd user units and enables lingering. Every run syncs the code
+(never `secrets/`, the database or `config.local.yaml`), runs `pip install -e .`,
+imports the legacy data once, and restarts the service. A minimal
+`config.local.yaml` (no secrets) is created only if none exists.
+
+## Finish setup (Jamil)
+
+These steps need a person; the server runs without them but reports
+`bluetooth: "unconfigured"` and `cookies: "missing"` until they are done.
+
+1. **Pair the Echo.** Say "Alexa, pair Bluetooth". On the Pi run
+   `bluetoothctl`, then `select <controller>` (use `list` to find the USB
+   adapter, `hci1`), `scan on`, and note the Echo's MAC address. Then run
+   `bash ~/home-studio/scripts/pair-bluetooth.sh <ECHO_MAC> hci1`. Check
+   `bluetoothctl info <ECHO_MAC>` shows `Connected: yes`. Put the MAC in
+   `~/home-studio/config.local.yaml` under `bluetooth: speaker_mac:`.
+2. **YouTube cookies.** In a desktop browser logged into YouTube, export
+   `cookies.txt` with a "Get cookies.txt LOCALLY" type extension and copy it to
+   `~/home-studio/secrets/cookies.txt` on the Pi (`chmod 600`).
+3. **Claude login.** On the Pi, run `claude` once and complete `/login`.
+   (If `claude` is missing: `sudo npm i -g @anthropic-ai/claude-code`.)
+4. **Optional:** a YouTube Data API key under `youtube: api_key:` in
+   `config.local.yaml`.
+5. **Tailscale** for reaching the app away from home:
+   `curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up`,
+   then note the MagicDNS name and use it in the app.
+6. `systemctl --user restart home-studio`, then
+   `curl -s localhost:8765/api/status` should show `ok: true`, bluetooth
+   `connected` and cookies `ok`.
