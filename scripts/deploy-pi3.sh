@@ -32,11 +32,26 @@ bluetooth:
 CFG
     chmod 600 config.local.yaml
 fi
-.venv/bin/pip install -q -e .
+mkdir -p ~/.config/systemd/user
+cp systemd/home-studio.service systemd/ytdlp-update.service systemd/ytdlp-update.timer    ~/.config/systemd/user/
+chmod +x scripts/*.sh
+systemctl --user daemon-reload
+.venv/bin/pip install -q -e . </dev/null
 if [ ! -f data/.legacy-migrated ]; then
-    .venv/bin/python -m src --config config.yaml migrate-legacy --data-dir data
+    .venv/bin/python -m src --config config.yaml migrate-legacy --data-dir data </dev/null
     touch data/.legacy-migrated
 fi
 systemctl --user restart home-studio
+for _ in $(seq 1 10); do
+    if curl -fsS localhost:8765/api/status >/dev/null 2>&1; then
+        echo "health check ok"
+        exit 0
+    fi
+    sleep 1
+done
+echo "ERROR: service did not become healthy" >&2
+systemctl --user status home-studio --no-pager >&2 || true
+journalctl --user -u home-studio -n 30 --no-pager >&2 || true
+exit 1
 REMOTE
 echo "Deployed. Check: ssh \$HOME_STUDIO_HOST 'curl -s localhost:8765/api/status'"
