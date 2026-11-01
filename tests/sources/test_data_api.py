@@ -49,7 +49,13 @@ class FakeService:
 
 
 def _api(db, service, ceiling=9500):
-    return DataApi("key", lambda: db, ceiling=ceiling, service=service, clock=lambda: NOW)
+    """DataApi over the test database; each call gets its own connection, as in serve."""
+    from src.db import connect
+
+    path = db.execute("PRAGMA database_list").fetchone()[2]
+    return DataApi(
+        "key", lambda: connect(path), ceiling=ceiling, service=service, clock=lambda: NOW
+    )
 
 
 def test_search_records_100_units(db):
@@ -136,3 +142,46 @@ def test_channel_uploads_costs_two_units(db):
 def test_channel_uploads_unknown_channel(db):
     svc = FakeService(lambda n, kw: {"items": []})
     assert _api(db, svc).channel_uploads("nope") == []
+
+
+def test_concurrent_calls_never_overlap_execute_or_overspend(db):
+    import threading
+    import time
+
+    active, peak = [0], [0]
+    guard = threading.Lock()
+
+    def responder(name, kw):
+        return {"items": [{"id": {"videoId": "a"}}]}
+
+    class SlowReq:
+        def execute(self):
+            with guard:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            time.sleep(0.01)
+            with guard:
+                active[0] -= 1
+            return responder("search", {})
+
+    class Svc(FakeService):
+        def search(self):
+            return type("R", (), {"list": lambda self, **kw: SlowReq()})()
+
+    api = _api(db, Svc(responder), ceiling=500)
+    results = []
+
+    def worker():
+        try:
+            results.append(api.search("q"))
+        except QuotaExceeded:
+            results.append("quota")
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert peak[0] == 1
+    assert results.count("quota") == 3
+    assert settings.quota_used(db, DAY) == 500
