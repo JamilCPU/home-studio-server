@@ -1,4 +1,4 @@
-"""Configuration loader for YoutubeBrainwash.
+"""Configuration loader for Home Studio.
 
 Loads config.yaml, optionally deep-merges config.local.yaml on top,
 and applies environment variable overrides.
@@ -71,6 +71,10 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
     schedule = raw.get("schedule", {})
     api = raw.get("api", {})
     bluetooth = raw.get("bluetooth", {})
+    db = raw.get("db", {})
+    player = raw.get("player", {})
+    agent = raw.get("agent", {})
+    general = raw.get("general", {})
 
     # Convert search_topics list to tuple for the frozen dataclass
     search_topics_raw = curation.get("search_topics", ())
@@ -101,6 +105,17 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
     if project_id and project_id != youtube.get("project_id", ""):
         logger.info("Using BRAINWASH_PROJECT_ID from environment")
 
+    youtube_api_key = os.environ.get(
+        "HOME_STUDIO_YOUTUBE_API_KEY", youtube.get("api_key", "")
+    )
+    bt_speaker_mac = os.environ.get(
+        "HOME_STUDIO_BT_SPEAKER_MAC", bluetooth.get("speaker_mac", "")
+    )
+    cookies_path = os.environ.get(
+        "HOME_STUDIO_COOKIES_PATH",
+        youtube.get("cookies_path", "secrets/cookies.txt"),
+    )
+
     return AppConfig(
         # YouTube OAuth
         client_id=client_id,
@@ -117,7 +132,9 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         recency_hours=curation.get("recency_hours", 48),
         language=curation.get("language", "en"),
         # Scoring
-        claude_command=scoring.get("claude_command", "claude"),
+        claude_command=agent.get(
+            "claude_command", scoring.get("claude_command", "claude")
+        ),
         max_prompt_tokens=scoring.get("max_prompt_tokens", 50000),
         # Playback
         snapcast_port=playback.get("snapcast_port", 1704),
@@ -130,7 +147,18 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         default_wakeup_time=schedule.get("default_wakeup_time", "07:30"),
         # API
         api_host=api.get("host", "0.0.0.0"),
-        api_port=api.get("port", 5000),
+        api_port=api.get("port", 8765),
         # Bluetooth
         bt_devices=bt_devices,
+        # Home Studio
+        db_path=db.get("path", "data/home_studio.db"),
+        youtube_api_key=youtube_api_key,
+        cookies_path=cookies_path,
+        mpv_socket=player.get("mpv_socket", "/tmp/home-studio-mpv.sock"),
+        bt_adapter=bluetooth.get("adapter", "hci1"),
+        bt_speaker_mac=bt_speaker_mac,
+        output_device_label=bluetooth.get("label", "Echo"),
+        timezone=general.get("timezone", "America/Chicago"),
+        claude_timeout_s=int(agent.get("timeout_s", 300)),
+        quota_ceiling=int(youtube.get("quota_ceiling", 9500)),
     )

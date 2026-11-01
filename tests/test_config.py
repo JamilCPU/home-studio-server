@@ -101,7 +101,7 @@ class TestLoadConfig:
         assert cfg.max_candidates == 80
         assert cfg.min_score == 7.0
         assert cfg.language == "en"
-        assert cfg.api_port == 5000
+        assert cfg.api_port == 8765
         assert cfg.search_topics == ()
 
     def test_curation_section(self, tmp_path: Path) -> None:
@@ -244,3 +244,90 @@ class TestEnvOverrides:
         monkeypatch.delenv("BRAINWASH_CLIENT_ID", raising=False)
         cfg = load_config(config_file)
         assert cfg.client_id == "yaml-id"
+
+
+# ---------------------------------------------------------------------------
+# Home Studio fields
+# ---------------------------------------------------------------------------
+
+
+class TestHomeStudioConfig:
+    """Tests for the Home Studio config fields and HOME_STUDIO_* overrides."""
+
+    def test_defaults(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("{}", encoding="utf-8")
+        cfg = load_config(config_file)
+        assert cfg.bt_adapter == "hci1"
+        assert cfg.timezone == "America/Chicago"
+        assert cfg.api_port == 8765
+        assert cfg.quota_ceiling == 9500
+        assert cfg.db_path == "data/home_studio.db"
+        assert cfg.cookies_path == "secrets/cookies.txt"
+        assert cfg.mpv_socket == "/tmp/home-studio-mpv.sock"
+        assert cfg.output_device_label == "Echo"
+        assert cfg.claude_timeout_s == 300
+        assert cfg.youtube_api_key == ""
+        assert cfg.bt_speaker_mac == ""
+
+    def test_env_overrides_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("HOME_STUDIO_YOUTUBE_API_KEY", "k")
+        cfg = load_config(config_file)
+        assert cfg.youtube_api_key == "k"
+
+    def test_env_overrides_mac_and_cookies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump({"bluetooth": {"speaker_mac": "yaml"}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("HOME_STUDIO_BT_SPEAKER_MAC", "11:22")
+        monkeypatch.setenv("HOME_STUDIO_COOKIES_PATH", "/x/c.txt")
+        cfg = load_config(config_file)
+        assert cfg.bt_speaker_mac == "11:22"
+        assert cfg.cookies_path == "/x/c.txt"
+
+    def test_local_yaml_merges(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump({"bluetooth": {"adapter": "hci1"}}), encoding="utf-8"
+        )
+        (tmp_path / "config.local.yaml").write_text(
+            yaml.dump({"bluetooth": {"speaker_mac": "AA:BB"}}), encoding="utf-8"
+        )
+        cfg = load_config(config_file)
+        assert cfg.bt_speaker_mac == "AA:BB"
+        assert cfg.bt_adapter == "hci1"
+
+    def test_yaml_sections_map(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "youtube": {"api_key": "yk", "cookies_path": "c.txt"},
+                    "db": {"path": "d.db"},
+                    "player": {"mpv_socket": "/tmp/s.sock"},
+                    "bluetooth": {"label": "Kitchen"},
+                    "agent": {"claude_command": "cl", "timeout_s": 60},
+                    "api": {"host": "127.0.0.1", "port": 9000},
+                    "general": {"timezone": "UTC"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = load_config(config_file)
+        assert cfg.youtube_api_key == "yk"
+        assert cfg.cookies_path == "c.txt"
+        assert cfg.db_path == "d.db"
+        assert cfg.mpv_socket == "/tmp/s.sock"
+        assert cfg.output_device_label == "Kitchen"
+        assert cfg.claude_command == "cl"
+        assert cfg.claude_timeout_s == 60
+        assert cfg.api_host == "127.0.0.1"
+        assert cfg.api_port == 9000
+        assert cfg.timezone == "UTC"

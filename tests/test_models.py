@@ -48,7 +48,7 @@ class TestAppConfig:
         assert config.curation_time == "04:00"
         assert config.default_wakeup_time == "07:30"
         assert config.api_host == "0.0.0.0"
-        assert config.api_port == 5000
+        assert config.api_port == 8765
         assert config.bt_devices == {}
 
     def test_frozen_direct_assignment_raises(self, sample_config: AppConfig) -> None:

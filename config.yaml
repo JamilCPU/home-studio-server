@@ -1,4 +1,4 @@
-# YoutubeBrainwash Configuration
+# Home Studio Configuration
 # Copy to config.local.yaml for local overrides (git-ignored)
 
 youtube:
@@ -6,6 +6,10 @@ youtube:
   client_id: ""
   client_secret: ""
   project_id: ""
+  # Home Studio: API key only (set via HOME_STUDIO_YOUTUBE_API_KEY or config.local.yaml)
+  api_key: ""
+  cookies_path: "secrets/cookies.txt"
+  quota_ceiling: 9500
 
 curation:
   # How many candidate videos to fetch from subscriptions + search
@@ -56,10 +60,28 @@ schedule:
 
 api:
   host: "0.0.0.0"
-  port: 5000
+  port: 8765
 
 bluetooth:
+  adapter: "hci1"
+  speaker_mac: ""
+  label: "Echo"
   # Echo Dot MAC addresses (fill in after pairing)
   devices:
     kitchen: ""
     bedroom: ""
+
+# --- Home Studio ---------------------------------------------------------
+# Secrets (API key, speaker MAC) belong in config.local.yaml or HOME_STUDIO_* env vars.
+general:
+  timezone: "America/Chicago"
+
+db:
+  path: "data/home_studio.db"
+
+player:
+  mpv_socket: "/tmp/home-studio-mpv.sock"
+
+agent:
+  claude_command: "claude"
+  timeout_s: 300
