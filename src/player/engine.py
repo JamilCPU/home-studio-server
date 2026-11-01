@@ -31,9 +31,15 @@ class NowPlaying:
 
 
 class PlaybackEngine:
-    def __init__(self, db_factory: Callable[[], sqlite3.Connection], mpv: Mpv) -> None:
+    def __init__(
+        self,
+        db_factory: Callable[[], sqlite3.Connection],
+        mpv: Mpv,
+        on_before_play: Callable[[str], None] | None = None,
+    ) -> None:
         self._db_factory = db_factory
         self._mpv = mpv
+        self._on_before_play = on_before_play
         self._lock = threading.Lock()
         self._item: QueueItem | None = None
         self._play_id: int | None = None
@@ -174,6 +180,11 @@ class PlaybackEngine:
     def _start(self, conn: sqlite3.Connection, item: QueueItem) -> str:
         """Load `item` into mpv; engine state is only set once the load succeeded."""
         play_id = start_play(conn, item.video.video_id, item.id)
+        if self._on_before_play is not None:
+            try:
+                self._on_before_play(item.video.video_id)
+            except Exception:
+                logger.exception("on_before_play hook failed for %s", item.video.video_id)
         try:
             self._mpv.load(WATCH_URL.format(item.video.video_id))
             self._mpv.set_pause(False)  # mpv keeps `pause` across loadfile
