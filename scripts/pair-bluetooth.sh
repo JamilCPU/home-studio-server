@@ -12,11 +12,28 @@ if [ -z "$MAC" ]; then
     exit 1
 fi
 
-# Map hciN -> controller address for `bluetoothctl select`.
-CTRL="$(hciconfig "$ADAPTER" 2>/dev/null | awk '/BD Address/ {print $3}')"
+# Resolve the controller address of the requested adapter. Never fall back to
+# the default controller: audio must go out through this adapter.
+CTRL=""
+METHOD=""
+CTRL="$( (hciconfig "$ADAPTER" 2>/dev/null || true) | awk '/BD Address/ {print $3}' )"
+[ -n "$CTRL" ] && METHOD="hciconfig"
+if [ -z "$CTRL" ] && [ -r "/sys/class/bluetooth/$ADAPTER/address" ]; then
+    CTRL="$(tr 'a-z' 'A-Z' < "/sys/class/bluetooth/$ADAPTER/address" || true)"
+    [ -n "$CTRL" ] && METHOD="sysfs"
+fi
 if [ -z "$CTRL" ]; then
-    CTRL="$(bluetoothctl list | awk -v a="$ADAPTER" 'NR==1 {print $2}')"
-    echo "Could not map $ADAPTER via hciconfig; falling back to the first controller." >&2
+    CTRL="$( (btmgmt --index "${ADAPTER#hci}" info 2>/dev/null || true)         | awk '/addr/ {print $2; exit}' )"
+    [ -n "$CTRL" ] && METHOD="btmgmt"
+fi
+if [ -z "$CTRL" ]; then
+    echo "ERROR: could not find the controller address for $ADAPTER (tried hciconfig, sysfs, btmgmt)." >&2
+    exit 1
+fi
+echo "Adapter $ADAPTER resolved via $METHOD"
+if [ "${PAIR_RESOLVE_ONLY:-}" = "1" ]; then
+    echo "METHOD=$METHOD ADDRESS=$CTRL"
+    exit 0
 fi
 
 echo "=== Pairing $MAC on $ADAPTER ==="
@@ -36,14 +53,22 @@ echo "=== Pairing $MAC on $ADAPTER ==="
     echo "quit"
 } | bluetoothctl
 
-# Make the speaker the default PipeWire sink (give the A2DP sink a moment to appear).
-SINK="bluez_output.${MAC//:/_}.1"
+if ! bluetoothctl info "$MAC" | grep -q 'Connected: yes'; then
+    echo "ERROR: $MAC is not connected after pairing." >&2
+    exit 1
+fi
+
+# Find the speaker's PipeWire sink (it can take a moment to appear).
+NAME=""
 for _ in 1 2 3 4 5; do
-    NAME="$(pactl list short sinks | awk -v m="${MAC//:/_}" '$2 ~ m {print $2; exit}')"
+    NAME="$(pactl list short sinks | grep -i bluez | awk '{print $2; exit}' || true)"
     [ -n "$NAME" ] && break
     sleep 2
 done
-SINK="${NAME:-$SINK}"
-pactl set-default-sink "$SINK" && echo "Default sink: $SINK"
-
-echo "Verify: bluetoothctl info $MAC   (expect 'Connected: yes')"
+if [ -z "$NAME" ]; then
+    echo "ERROR: no bluez sink found; the speaker may not have an audio profile yet." >&2
+    exit 1
+fi
+pactl set-default-sink "$NAME"
+echo "Default sink: $NAME"
+echo "Done: $MAC connected on $ADAPTER."
