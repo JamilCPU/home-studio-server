@@ -239,6 +239,8 @@ class TestHomeStudioConfig:
         assert cfg.mpv_socket == "/tmp/home-studio-mpv.sock"
         assert cfg.output_device_label == "Echo"
         assert cfg.claude_timeout_s == 300
+        assert "--strict-mcp-config" in cfg.claude_args
+        assert cfg.claude_args[cfg.claude_args.index("--tools") + 1] == ""
         assert cfg.youtube_api_key == ""
         assert cfg.bt_speaker_mac == ""
 
@@ -285,7 +287,8 @@ class TestHomeStudioConfig:
                     "db": {"path": "d.db"},
                     "player": {"mpv_socket": "/tmp/s.sock"},
                     "bluetooth": {"label": "Kitchen"},
-                    "agent": {"claude_command": "cl", "timeout_s": 60},
+                    "agent": {"claude_command": "cl", "timeout_s": 60,
+                              "claude_args": ["--tools", "", "--model", "sonnet"]},
                     "api": {"host": "127.0.0.1", "port": 9000},
                     "general": {"timezone": "UTC"},
                 }
@@ -300,6 +303,7 @@ class TestHomeStudioConfig:
         assert cfg.output_device_label == "Kitchen"
         assert cfg.claude_command == "cl"
         assert cfg.claude_timeout_s == 60
+        assert cfg.claude_args == ("--tools", "", "--model", "sonnet")
         assert cfg.api_host == "127.0.0.1"
         assert cfg.api_port == 9000
         assert cfg.timezone == "UTC"

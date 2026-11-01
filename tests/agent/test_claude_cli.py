@@ -37,19 +37,76 @@ def _raising(exc):
     return run
 
 
-def test_run_claude_returns_stripped_stdout_and_passes_args():
+def test_run_claude_returns_stripped_stdout_and_passes_args(tmp_path):
     calls = []
-    out = run_claude("hi", command="cl", timeout_s=7, runner=_runner("  ok \n", calls=calls))
+    out = run_claude(
+        "hi", command="cl", timeout_s=7, cwd=tmp_path, extra_args=["--tools", ""],
+        runner=_runner("  ok \n", calls=calls),
+    )
     assert out == "ok"
     cmd, kwargs = calls[0]
-    assert cmd == ["cl", "-p", "hi"]
+    assert cmd == ["cl", "-p", "hi", "--tools", ""]
     assert kwargs == {
         "capture_output": True,
         "stdin": subprocess.DEVNULL,
         "text": True,
         "timeout": 7,
         "encoding": "utf-8",
+        "cwd": str(tmp_path),
     }
+
+
+def test_run_claude_default_cwd_is_a_fresh_empty_dir():
+    import os
+
+    seen = []
+
+    def run(cmd, **kwargs):
+        seen.append((kwargs["cwd"], os.listdir(kwargs["cwd"])))
+        return SimpleNamespace(stdout="ok", stderr="", returncode=0)
+
+    run_claude("x", runner=run)
+    run_claude("x", runner=run)
+    (first, first_listing), (second, _) = seen
+    assert first_listing == []
+    assert first != second and first != os.getcwd()
+    assert not os.path.exists(first)  # removed after the call
+
+
+def test_default_claude_args_lock_down_tools_mcp_and_sessions():
+    from src.agent.claude_cli import DEFAULT_CLAUDE_ARGS
+
+    args = list(DEFAULT_CLAUDE_ARGS)
+    assert args[args.index("--tools") + 1] == ""
+    assert "--strict-mcp-config" in args
+    assert args[args.index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    assert "--no-session-persistence" in args
+
+
+def test_make_runner_defaults_to_locked_down_args(monkeypatch):
+    from src.agent.claude_cli import DEFAULT_CLAUDE_ARGS
+
+    calls = []
+    monkeypatch.setattr(
+        "src.agent.claude_cli.subprocess.run", _runner('{"a": 1}', calls=calls)
+    )
+    make_runner(command="cl")("p")
+    assert calls[0][0] == ["cl", "-p", "p", *DEFAULT_CLAUDE_ARGS]
+
+
+def test_short_json_mentioning_rate_limiting_is_returned():
+    body = '{"queries": ["api rate limiting explained"], "count": 2, "target_minutes": null}'
+    assert run_claude("x", runner=_runner(stdout=body, returncode=0)) == body
+
+
+def test_json_stdout_with_stderr_marker_still_raises():
+    with pytest.raises(ClaudeNotLoggedIn):
+        run_claude("x", runner=_runner(stdout='{"a": 1}', stderr="Not logged in", returncode=0))
+
+
+def test_json_stdout_with_nonzero_exit_is_scanned():
+    with pytest.raises(ClaudeRateLimited):
+        run_claude("x", runner=_runner(stdout='{"error": "rate limit"}', returncode=1))
 
 
 def test_missing_binary_maps_to_not_found():
@@ -97,16 +154,16 @@ def test_all_errors_subclass_claude_error():
         assert issubclass(cls, ClaudeError)
 
 
-def test_make_runner_binds_command_and_timeout(monkeypatch):
+def test_make_runner_binds_command_timeout_and_args(monkeypatch):
     seen = {}
 
-    def fake_run(prompt, *, command, timeout_s):
-        seen.update(prompt=prompt, command=command, timeout_s=timeout_s)
+    def fake_run(prompt, *, command, timeout_s, extra_args):
+        seen.update(prompt=prompt, command=command, timeout_s=timeout_s, extra_args=extra_args)
         return "done"
 
     monkeypatch.setattr("src.agent.claude_cli.run_claude", fake_run)
-    assert make_runner(command="c", timeout_s=9)("p") == "done"
-    assert seen == {"prompt": "p", "command": "c", "timeout_s": 9}
+    assert make_runner(command="c", timeout_s=9, extra_args=("--x",))("p") == "done"
+    assert seen == {"prompt": "p", "command": "c", "timeout_s": 9, "extra_args": ("--x",)}
 
 
 def test_extract_json_fenced():

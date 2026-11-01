@@ -70,7 +70,7 @@ def _default_data_api(config: AppConfig, db_factory: Callable[[], sqlite3.Connec
 
 
 def _default_claude(config: AppConfig) -> Any:
-    return make_runner(config.claude_command, config.claude_timeout_s)
+    return make_runner(config.claude_command, config.claude_timeout_s, config.claude_args)
 
 
 def _default_bt(config: AppConfig, db_factory: Callable[[], sqlite3.Connection]) -> Any:

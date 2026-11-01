@@ -9,6 +9,15 @@ To update a frozen dataclass, use ``dataclasses.replace()``:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+# Default extra `claude` CLI arguments (agent.claude_args), checked against Claude Code
+# 2.1.86: no tools, no MCP servers (only the empty --mcp-config), no saved session.
+DEFAULT_CLAUDE_ARGS: tuple[str, ...] = (
+    "--tools", "",
+    "--strict-mcp-config",
+    "--mcp-config", '{"mcpServers":{}}',
+    "--no-session-persistence",
+)
 from datetime import datetime, timezone
 
 
@@ -44,6 +53,7 @@ class AppConfig:
     output_device_label: str = "Echo"
     timezone: str = "America/Chicago"
     claude_timeout_s: int = 300
+    claude_args: tuple[str, ...] = DEFAULT_CLAUDE_ARGS
     quota_ceiling: int = 9500
 
 
