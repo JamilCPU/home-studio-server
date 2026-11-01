@@ -22,6 +22,7 @@ COMPONENT = "bluetooth"
 TIMEOUT_S = 15
 SYSFS_BLUETOOTH = Path("/sys/class/bluetooth")
 _BD_ADDRESS = re.compile(r"BD Address:\s*([0-9A-Fa-f:]{17})")
+_BUSCTL_ADDRESS = re.compile(r'^s\s+"([0-9A-Fa-f:]{17})"')
 _CONTROLLER = re.compile(r"^Controller\s+([0-9A-Fa-f:]{17})", re.MULTILINE)
 
 _MAC = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", re.IGNORECASE)
@@ -58,12 +59,25 @@ def _sysfs_address(adapter: str, sysfs: Path) -> str | None:
     return text.upper() if _MAC.match(text) else None
 
 
+def _dbus_address(adapter: str, run: Callable[..., Any]) -> str | None:
+    """The adapter's Address property from BlueZ over D-Bus (no root needed)."""
+    out = _run(run, ["busctl", "--system", "get-property", "org.bluez",
+                     f"/org/bluez/{adapter}", "org.bluez.Adapter1", "Address"])
+    match = _BUSCTL_ADDRESS.match((out or "").strip())
+    return match.group(1).upper() if match else None
+
+
 def _controller_address(
     adapter: str, run: Callable[..., Any], sysfs: Path = SYSFS_BLUETOOTH
 ) -> str | None:
-    """Resolve an adapter name (hci1) to its controller address: hciconfig, else sysfs."""
+    """Resolve an adapter name (hci1) to its controller address: hciconfig, then
+    /sys/class/bluetooth/<adapter>/address, then BlueZ's D-Bus Adapter1.Address (newer
+    kernels such as 6.12 no longer expose the sysfs attribute)."""
     match = _BD_ADDRESS.search(_run(run, ["hciconfig", adapter]) or "")
-    address = match.group(1).upper() if match else _sysfs_address(adapter, sysfs)
+    address = (
+        match.group(1).upper() if match
+        else _sysfs_address(adapter, sysfs) or _dbus_address(adapter, run)
+    )
     if address is None:
         logger.warning("could not resolve adapter %s to a controller address", adapter)
         return None

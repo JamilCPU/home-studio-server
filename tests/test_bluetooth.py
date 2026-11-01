@@ -238,3 +238,22 @@ def test_monitor_passes_sysfs_through(tmp_path):
     sysfs = _sysfs(tmp_path, CTRL)
     mon = BtMonitor(MAC, "hci1", run=NoHciconfigRun(), popen=popen, sysfs=sysfs)
     assert mon.check_once() == "connected"
+
+
+class BusctlRun(NoHciconfigRun):
+    """No hciconfig, no sysfs address (kernel 6.12), but BlueZ answers on D-Bus."""
+
+    def __call__(self, cmd, **kwargs):
+        if cmd[0] == "busctl":
+            self.calls.append((cmd, kwargs))
+            return SimpleNamespace(stdout=f's "{CTRL}"\n', returncode=0)
+        return super().__call__(cmd, **kwargs)
+
+
+def test_controller_address_falls_back_to_bluez_dbus(tmp_path):
+    popen = FakePopen(OK_LINES)
+    run = BusctlRun()
+    assert ensure_connected(MAC, "hci1", run, popen, sysfs=tmp_path) is True
+    assert "".join(popen.written).startswith(f"select {CTRL}\n")
+    assert ["busctl", "--system", "get-property", "org.bluez", "/org/bluez/hci1",
+            "org.bluez.Adapter1", "Address"] in [c[0] for c in run.calls]
