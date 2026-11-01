@@ -99,46 +99,18 @@ class TestLoadConfig:
         cfg = load_config(config_file)
         assert cfg.client_id == ""
         assert cfg.max_candidates == 80
-        assert cfg.min_score == 7.0
         assert cfg.language == "en"
         assert cfg.api_port == 8765
-        assert cfg.search_topics == ()
 
     def test_curation_section(self, tmp_path: Path) -> None:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
-            yaml.dump(
-                {
-                    "curation": {
-                        "max_candidates": 200,
-                        "min_score": 8.5,
-                        "search_topics": ["AI", "ML"],
-                        "language": "fr",
-                    },
-                }
-            ),
+            yaml.dump({"curation": {"max_candidates": 200, "language": "fr"}}),
             encoding="utf-8",
         )
         cfg = load_config(config_file)
         assert cfg.max_candidates == 200
-        assert cfg.min_score == 8.5
-        assert cfg.search_topics == ("AI", "ML")
         assert cfg.language == "fr"
-
-    def test_bluetooth_devices(self, tmp_path: Path) -> None:
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            yaml.dump(
-                {
-                    "bluetooth": {
-                        "devices": {"speaker": "AA:BB:CC:DD:EE:FF"},
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        cfg = load_config(config_file)
-        assert cfg.bt_devices == {"speaker": "AA:BB:CC:DD:EE:FF"}
 
     def test_local_yaml_merging(self, tmp_path: Path) -> None:
         config_file = tmp_path / "config.yaml"
@@ -156,7 +128,7 @@ class TestLoadConfig:
             yaml.dump(
                 {
                     "youtube": {"client_id": "local-id"},
-                    "curation": {"min_score": 9.0},
+                    "curation": {"language": "de"},
                 }
             ),
             encoding="utf-8",
@@ -166,9 +138,9 @@ class TestLoadConfig:
         assert cfg.client_id == "local-id"
         # local does NOT wipe project_id from base
         assert cfg.project_id == "base-proj"
-        # local adds min_score while keeping max_candidates from base
+        # local adds language while keeping max_candidates from base
         assert cfg.max_candidates == 50
-        assert cfg.min_score == 9.0
+        assert cfg.language == "de"
 
 
 # ---------------------------------------------------------------------------
@@ -262,8 +234,8 @@ class TestHomeStudioConfig:
         assert cfg.timezone == "America/Chicago"
         assert cfg.api_port == 8765
         assert cfg.quota_ceiling == 9500
-        assert cfg.db_path == "data/home_studio.db"
-        assert cfg.cookies_path == "secrets/cookies.txt"
+        assert cfg.db_path == str(tmp_path / "data" / "home_studio.db")
+        assert cfg.cookies_path == str(tmp_path / "secrets" / "cookies.txt")
         assert cfg.mpv_socket == "/tmp/home-studio-mpv.sock"
         assert cfg.output_device_label == "Echo"
         assert cfg.claude_timeout_s == 300
@@ -322,8 +294,8 @@ class TestHomeStudioConfig:
         )
         cfg = load_config(config_file)
         assert cfg.youtube_api_key == "yk"
-        assert cfg.cookies_path == "c.txt"
-        assert cfg.db_path == "d.db"
+        assert cfg.cookies_path == str(tmp_path / "c.txt")
+        assert cfg.db_path == str(tmp_path / "d.db")
         assert cfg.mpv_socket == "/tmp/s.sock"
         assert cfg.output_device_label == "Kitchen"
         assert cfg.claude_command == "cl"
@@ -331,3 +303,24 @@ class TestHomeStudioConfig:
         assert cfg.api_host == "127.0.0.1"
         assert cfg.api_port == 9000
         assert cfg.timezone == "UTC"
+
+    def test_relative_paths_resolve_against_config_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conf_dir = tmp_path / "conf"
+        conf_dir.mkdir()
+        config_file = conf_dir / "config.yaml"
+        config_file.write_text(
+            yaml.dump({"youtube": {"cookies_path": "s/c.txt"}, "db": {"path": "data/x.db"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)  # cwd differs from the config dir
+        cfg = load_config(Path("conf/config.yaml"))
+        assert cfg.cookies_path == str(conf_dir / "s" / "c.txt")
+        assert cfg.db_path == str(conf_dir / "data" / "x.db")
+
+    def test_absolute_paths_kept(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        absolute = tmp_path / "elsewhere" / "h.db"
+        config_file.write_text(yaml.dump({"db": {"path": str(absolute)}}), encoding="utf-8")
+        assert load_config(config_file).db_path == str(absolute)

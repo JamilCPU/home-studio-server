@@ -149,11 +149,13 @@ def _parse_picks(data: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def _search(query: str, data_api, ytdlp) -> list[str]:
-    try:
-        return data_api.search(query, 25)
-    except QuotaExceeded:
-        logger.warning("Data API quota exhausted; searching via yt-dlp")
-        return ytdlp.search(query, 20)
+    """Search with the Data API; yt-dlp when there is no API key or no quota left."""
+    if data_api is not None:
+        try:
+            return data_api.search(query, 25)
+        except QuotaExceeded:
+            logger.warning("Data API quota exhausted; searching via yt-dlp")
+    return ytdlp.search(query, 20)
 
 
 def _candidates(conn: sqlite3.Connection, queries: list[str], data_api, ytdlp) -> list[Video]:

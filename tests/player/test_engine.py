@@ -370,3 +370,28 @@ def test_on_before_play_exception_ignored(factory, mpv):
     add(factory, "hook2")
     assert eng.play_next() is not None
     assert mpv.calls_named("load")
+
+
+def test_replace_mpv_routes_later_calls_to_new_mpv(engine, mpv, factory):
+    add(factory, "a")
+    new = FakeMpv()
+    engine.replace_mpv(new)
+    engine.play_next()
+    assert mpv.calls_named("load") == []
+    assert new.calls_named("load") == [("load", url("a"))]
+
+
+def test_replace_mpv_requeues_current_item(engine, mpv, factory):
+    add(factory, "a")
+    engine.play_next()
+    engine.replace_mpv(FakeMpv())
+    assert engine.now().state == "idle"
+    assert queue_statuses(factory) == ["queued"]
+    assert plays(factory)[0]["end_reason"] == "error"
+
+
+def test_replace_mpv_when_idle_keeps_queue(engine, factory):
+    add(factory, "a")
+    engine.replace_mpv(FakeMpv())
+    assert queue_statuses(factory) == ["queued"]
+    assert plays(factory) == []

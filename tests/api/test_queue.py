@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.sources.ytdlp import SourceAuthError
+from src.sources.ytdlp import SourceAuthError, SourceError
 from src.store import queue
 from src.store.settings import latest_event
 from tests.api.conftest import make_video
@@ -193,6 +193,24 @@ def test_search_without_data_api_uses_ytdlp(api_no_data_api):
     api_no_data_api.ytdlp.search_results = ["aaaaaaaaaaa"]
     resp = api_no_data_api.client.get("/api/search", params={"q": "x"})
     assert [r["video_id"] for r in resp.json()["data"]["results"]] == ["aaaaaaaaaaa"]
+
+
+def test_search_data_api_error_falls_back_to_ytdlp(api):
+    api.catalog.add(make_video("aaaaaaaaaaa"))
+    api.data_api.search_exc = RuntimeError("HttpError 400: API key not valid")
+    api.ytdlp.search_results = ["aaaaaaaaaaa"]
+    resp = api.client.get("/api/search", params={"q": "x"})
+    assert resp.status_code == 200
+    assert [r["video_id"] for r in resp.json()["data"]["results"]] == ["aaaaaaaaaaa"]
+    assert api.ytdlp.searches == ["x"]
+
+
+def test_search_both_sources_fail_502(api):
+    api.data_api.search_exc = RuntimeError("HttpError 500")
+    api.ytdlp.search_exc = SourceError("network down")
+    resp = api.client.get("/api/search", params={"q": "x"})
+    assert resp.status_code == 502
+    assert resp.json() == {"ok": False, "data": None, "error": "search failed"}
 
 
 @pytest.mark.parametrize("params", [{"q": ""}, {"q": "   "}, {}])

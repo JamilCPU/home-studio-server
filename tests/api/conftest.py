@@ -125,9 +125,12 @@ class FakeDataApi:
         self.search_results: list[str] = []
         self.quota_exceeded = False
         self.searches: list[str] = []
+        self.search_exc: Exception | None = None
 
     def search(self, query: str, max_results: int = 25) -> list[str]:
         self.searches.append(query)
+        if self.search_exc is not None:
+            raise self.search_exc
         if self.quota_exceeded:
             raise QuotaExceeded("over")
         return list(self.search_results)

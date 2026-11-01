@@ -97,6 +97,12 @@ class PlaybackEngine:
             state = "paused" if self._mpv.paused() else "playing"
             return NowPlaying(state, self._item, self._position(), self._duration())
 
+    def replace_mpv(self, mpv: Mpv) -> None:
+        """Swap in a fresh mpv (after a restart); a current item goes back to the queue."""
+        with self._lock, closing(self._db_factory()) as conn:
+            self._requeue_current(conn)
+            self._mpv = mpv
+
     def handle_event(self, evt: dict) -> None:
         if evt.get("event") == "mpv-died":
             self._handle_died()
@@ -155,12 +161,16 @@ class PlaybackEngine:
     def _handle_died(self) -> None:
         """mpv is gone: record the error, keep the item queued, go idle (no restart here)."""
         with self._lock, closing(self._db_factory()) as conn:
-            item = self._item
-            self._end_current(conn, "error", 0.0)
-            if item is not None:
-                queue.mark(conn, item.id, "queued")
+            self._requeue_current(conn)
             log_event(conn, COMPONENT, "error", "mpv process died")
             logger.error("mpv process died")
+
+    def _requeue_current(self, conn: sqlite3.Connection) -> None:
+        """End the current play as an error and put its item back in the queue."""
+        item = self._item
+        self._end_current(conn, "error", 0.0)
+        if item is not None:
+            queue.mark(conn, item.id, "queued")
 
     def _advance(self, conn: sqlite3.Connection) -> QueueItem | None:
         return self._play_item(conn, queue.pop_next(conn))

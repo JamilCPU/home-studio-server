@@ -70,6 +70,11 @@ class MpvIpc:
         self._sock = self._connect()
         threading.Thread(target=self._read_loop, daemon=True, name="mpv-ipc-reader").start()
 
+    @property
+    def dead(self) -> bool:
+        """True once the mpv process or its socket is gone; the instance is then unusable."""
+        return self._dead
+
     def _connect(self):
         from socket import AF_UNIX, SOCK_STREAM, socket  # AF_UNIX is missing on Windows
 

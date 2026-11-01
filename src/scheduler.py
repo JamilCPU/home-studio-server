@@ -1,4 +1,7 @@
-"""Morning scheduler: builds the wake-up set shortly before wake time and starts it."""
+"""Morning scheduler: builds the wake-up set shortly before wake time and starts it.
+
+It also runs the daily account import at 04:00 local when an import function is given.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +10,7 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from contextlib import closing
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from src.agent.morning import COMPONENT, fallback_morning, morning_prompt
@@ -21,6 +24,8 @@ BUILD_LEAD = timedelta(minutes=5)
 BUILD_WINDOW = timedelta(minutes=3)
 START_WINDOW = timedelta(minutes=10)
 TICK_SECONDS = 20
+IMPORT_AT = time(4, 0)
+IMPORT_WINDOW = timedelta(minutes=10)
 MORNING_SOURCES = ("morning", "fallback")
 
 
@@ -42,6 +47,7 @@ class MorningScheduler:
         engine,
         tz: str = "America/Chicago",
         clock: Callable[..., datetime] = datetime.now,
+        import_fn: Callable[[], object] | None = None,
     ) -> None:
         self._db_factory = db_factory
         self._run_request = run_request_fn
@@ -50,6 +56,8 @@ class MorningScheduler:
         self._clock = clock
         self._last_thread: threading.Thread | None = None
         self._build_thread: threading.Thread | None = None
+        self._import_fn = import_fn
+        self._import_thread: threading.Thread | None = None
 
     # -- scheduled ticks ----------------------------------------------------------
 
@@ -57,18 +65,44 @@ class MorningScheduler:
         """Do whatever is due at ``now`` (aware datetime); returns the actions taken."""
         local = now.astimezone(self._tz).replace(tzinfo=None)
         with closing(self._db_factory()) as conn:
+            actions = self._maybe_import(conn, local)
             settings = get_morning(conn)
             if not settings.enabled or local.weekday() not in settings.days:
-                return []
+                return actions
             hour, minute = (int(p) for p in settings.wake_time.split(":"))
             wake = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
             build_at = wake - BUILD_LEAD
-            actions: list[str] = []
             if build_at <= local < build_at + BUILD_WINDOW:
                 actions.extend(self._maybe_build(conn, settings, local.date()))
             if wake <= local < wake + START_WINDOW:
                 actions.extend(self._maybe_start(conn, settings, local.date()))
             return actions
+
+    def _maybe_import(self, conn: sqlite3.Connection, local: datetime) -> list[str]:
+        """Start the daily account import once per day, in the window after 04:00."""
+        if self._import_fn is None:
+            return []
+        start = datetime.combine(local.date(), IMPORT_AT)
+        if not start <= local < start + IMPORT_WINDOW:
+            return []
+        message = f"imported:{local.date().isoformat()}"
+        if event_logged(conn, message) or self._import_running():
+            return []
+        log_event(conn, COMPONENT, "info", message)
+        self._import_thread = threading.Thread(
+            target=self._import_worker, name="account-import", daemon=True
+        )
+        self._import_thread.start()
+        return ["imported"]
+
+    def _import_running(self) -> bool:
+        return self._import_thread is not None and self._import_thread.is_alive()
+
+    def _import_worker(self) -> None:
+        try:
+            self._import_fn()  # type: ignore[misc]
+        except Exception:
+            logger.exception("daily account import failed")
 
     def _maybe_build(
         self, conn: sqlite3.Connection, settings: MorningSettings, day: date

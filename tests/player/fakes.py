@@ -13,6 +13,8 @@ class FakeMpv:
         self.is_paused = False
         self.events: list[dict] = []
         self.load_errors: dict[str, Exception] = {}  # url -> exception to raise
+        self.dead = False
+        self.closed = False
 
     def load(self, url: str) -> None:
         self.calls.append(("load", url))
@@ -42,6 +44,9 @@ class FakeMpv:
 
     def wait_event(self, timeout: float) -> dict | None:
         return self.events.pop(0) if self.events else None
+
+    def close(self) -> None:
+        self.closed = True
 
     def push(self, event: dict) -> None:
         self.events.append(event)

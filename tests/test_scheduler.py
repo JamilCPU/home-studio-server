@@ -9,7 +9,7 @@ import pytest
 
 from src.db import connect, migrate
 from src.player.engine import NowPlaying
-from src.scheduler import MorningScheduler
+from src.scheduler import MorningScheduler, event_logged
 from src.store.agent import list_requests
 from src.store.queue import enqueue, upcoming
 from src.store.settings import MorningSettings, log_event, record_import, save_morning
@@ -268,3 +268,56 @@ def test_slow_agent_does_not_block_start(factory):
     sched._build_thread.join(timeout=5)
     ordered = [(i.video.video_id, i.source) for i in upcoming(factory())]
     assert ordered == [("m1", "fallback"), ("m2", "morning")]
+
+
+class ImportFn:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+
+
+def import_tick(sched, now):
+    actions = sched.tick(now)
+    if sched._import_thread is not None:
+        sched._import_thread.join(timeout=5)
+    return actions
+
+
+def test_daily_import_runs_once_at_0400(factory):
+    fn = ImportFn()
+    sched = MorningScheduler(factory, run_request_fn=Runner(), engine=FakeEngine(), import_fn=fn)
+    assert import_tick(sched, at(2026, 5, 6, 3, 59)) == []
+    assert import_tick(sched, at(2026, 5, 6, 4, 0)) == ["imported"]
+    assert fn.calls == 1
+    assert import_tick(sched, at(2026, 5, 6, 4, 1)) == []
+    assert fn.calls == 1
+    conn = factory()
+    assert event_logged(conn, "imported:2026-05-06")
+    conn.close()
+    assert import_tick(sched, at(2026, 5, 7, 4, 0)) == ["imported"]
+    assert fn.calls == 2
+
+
+def test_daily_import_runs_when_morning_disabled(factory):
+    conn = factory()
+    save_morning(conn, MorningSettings(False, "07:45", ALL_DAYS, ("technology",), 3))
+    conn.close()
+    fn = ImportFn()
+    sched = MorningScheduler(factory, run_request_fn=Runner(), engine=FakeEngine(), import_fn=fn)
+    assert import_tick(sched, at(2026, 5, 6, 4, 2)) == ["imported"]
+    assert fn.calls == 1
+
+
+def test_daily_import_disabled_without_import_fn(factory):
+    sched, _ = make(factory, Runner())
+    assert sched.tick(at(2026, 5, 6, 4, 0)) == []
+
+
+def test_daily_import_failure_does_not_break_tick(factory):
+    def boom():
+        raise RuntimeError("feed down")
+
+    sched = MorningScheduler(factory, run_request_fn=Runner(), engine=FakeEngine(), import_fn=boom)
+    assert import_tick(sched, at(2026, 5, 6, 4, 0)) == ["imported"]
