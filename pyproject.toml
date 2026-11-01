@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "youtube-brainwash"
+name = "home-studio-server"
 version = "0.1.0"
-description = "Personalized YouTube feed curator with transcript-aware AI scoring"
+description = "Home Studio: a Raspberry Pi server that plays YouTube audio to a Bluetooth speaker and builds AI-curated morning sets"
 requires-python = ">=3.11"
 dependencies = [
     "google-api-python-client>=2.100.0",

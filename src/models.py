@@ -49,10 +49,22 @@ class AppConfig:
 
     # API
     api_host: str = "0.0.0.0"
-    api_port: int = 5000
+    api_port: int = 8765
 
     # Bluetooth
     bt_devices: dict[str, str] = field(default_factory=dict)
+
+    # Home Studio
+    db_path: str = "data/home_studio.db"
+    youtube_api_key: str = ""
+    cookies_path: str = "secrets/cookies.txt"
+    mpv_socket: str = "/tmp/home-studio-mpv.sock"
+    bt_adapter: str = "hci1"
+    bt_speaker_mac: str = ""
+    output_device_label: str = "Echo"
+    timezone: str = "America/Chicago"
+    claude_timeout_s: int = 300
+    quota_ceiling: int = 9500
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,7 @@
+# Copy to config.local.yaml (git-ignored) and fill in. Placeholders only.
+youtube:
+  api_key: "YOUR_YOUTUBE_DATA_API_KEY"
+  cookies_path: "secrets/cookies.txt"
+
+bluetooth:
+  speaker_mac: "AA:BB:CC:DD:EE:FF"
