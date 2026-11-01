@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import logging
-import queue
 import re
 import sqlite3
 import subprocess
 import threading
-import time
 from collections.abc import Callable
 from contextlib import closing
-from pathlib import Path
 from typing import Any, Literal
 
 from src.store.settings import log_event
@@ -20,72 +17,25 @@ logger = logging.getLogger(__name__)
 
 COMPONENT = "bluetooth"
 TIMEOUT_S = 15
-SYSFS_BLUETOOTH = Path("/sys/class/bluetooth")
-_BD_ADDRESS = re.compile(r"BD Address:\s*([0-9A-Fa-f:]{17})")
-_BUSCTL_ADDRESS = re.compile(r'^s\s+"([0-9A-Fa-f:]{17})"')
-_CONTROLLER = re.compile(r"^Controller\s+([0-9A-Fa-f:]{17})", re.MULTILINE)
+CONNECT_TIMEOUT_S = 30
 
 _MAC = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", re.IGNORECASE)
-_SUCCESS = ("Connection successful",)
-_FAILURE = ("Failed to connect", "not available")
-_QUIT_WAIT_S = 5
+_ADAPTER = re.compile(r"^hci\d+$")
 
 State = Literal["connected", "disconnected", "unconfigured"]
 
 
-def _run(run: Callable[..., Any], cmd: list[str], **kwargs: Any) -> str | None:
-    """Run a command; return stdout, or None on timeout / missing binary / OS error."""
+def _busctl(
+    run: Callable[..., Any], args: list[str], timeout_s: float = TIMEOUT_S
+) -> Any | None:
+    """Run busctl (D-Bus, no root); return the result, or None on timeout / OS error."""
     try:
-        result = run(cmd, capture_output=True, text=True, timeout=TIMEOUT_S, **kwargs)
+        return run(["busctl", *args], capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        logger.warning("%s timed out", cmd[0])
+        logger.warning("busctl timed out")
     except OSError as exc:  # includes FileNotFoundError
-        logger.warning("%s unavailable: %s", cmd[0], exc)
-    else:
-        return result.stdout or ""
+        logger.warning("busctl unavailable: %s", exc)
     return None
-
-
-def is_connected(mac: str, run: Callable[..., Any] = subprocess.run) -> bool:
-    out = _run(run, ["bluetoothctl", "info", mac])
-    return out is not None and "Connected: yes" in out
-
-
-def _sysfs_address(adapter: str, sysfs: Path) -> str | None:
-    try:
-        text = (Path(sysfs) / adapter / "address").read_text(encoding="ascii").strip()
-    except OSError:
-        return None
-    return text.upper() if _MAC.match(text) else None
-
-
-def _dbus_address(adapter: str, run: Callable[..., Any]) -> str | None:
-    """The adapter's Address property from BlueZ over D-Bus (no root needed)."""
-    out = _run(run, ["busctl", "--system", "get-property", "org.bluez",
-                     f"/org/bluez/{adapter}", "org.bluez.Adapter1", "Address"])
-    match = _BUSCTL_ADDRESS.match((out or "").strip())
-    return match.group(1).upper() if match else None
-
-
-def _controller_address(
-    adapter: str, run: Callable[..., Any], sysfs: Path = SYSFS_BLUETOOTH
-) -> str | None:
-    """Resolve an adapter name (hci1) to its controller address: hciconfig, then
-    /sys/class/bluetooth/<adapter>/address, then BlueZ's D-Bus Adapter1.Address (newer
-    kernels such as 6.12 no longer expose the sysfs attribute)."""
-    match = _BD_ADDRESS.search(_run(run, ["hciconfig", adapter]) or "")
-    address = (
-        match.group(1).upper() if match
-        else _sysfs_address(adapter, sysfs) or _dbus_address(adapter, run)
-    )
-    if address is None:
-        logger.warning("could not resolve adapter %s to a controller address", adapter)
-        return None
-    listing = _run(run, ["bluetoothctl", "list"])
-    if listing is not None and address not in {m.upper() for m in _CONTROLLER.findall(listing)}:
-        logger.warning("adapter %s (%s) not known to bluetoothctl", adapter, address)
-        return None
-    return address
 
 
 def _validate_mac(mac: str) -> None:
@@ -93,89 +43,44 @@ def _validate_mac(mac: str) -> None:
         raise ValueError(f"invalid bluetooth MAC address: {mac!r}")
 
 
-def _interactive_connect(
-    address: str, mac: str, popen: Callable[..., Any], timeout_s: float
+def _adapter_path(adapter: str) -> str:
+    if not _ADAPTER.match(adapter):
+        raise ValueError(f"invalid bluetooth adapter name: {adapter!r}")
+    return f"/org/bluez/{adapter}"
+
+
+def _device_path(mac: str, adapter: str) -> str:
+    return f"{_adapter_path(adapter)}/dev_{mac.upper().replace(':', '_')}"
+
+
+def is_connected(
+    mac: str, adapter: str = "hci1", run: Callable[..., Any] = subprocess.run
 ) -> bool:
-    """Drive one bluetoothctl session until the asynchronous connect reports a result."""
-    try:
-        proc = popen(
-            ["bluetoothctl"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-    except OSError as exc:
-        logger.warning("bluetoothctl unavailable: %s", exc)
+    """Device1.Connected on this adapter's copy of the device (a missing device is False)."""
+    _validate_mac(mac)
+    result = _busctl(run, ["get-property", "org.bluez", _device_path(mac, adapter),
+                           "org.bluez.Device1", "Connected"])
+    if result is None or result.returncode != 0:
         return False
-    lines: queue.Queue[str | None] = queue.Queue()
-
-    def reader() -> None:
-        try:
-            for line in iter(proc.stdout.readline, ""):
-                lines.put(line)
-        except (OSError, ValueError):
-            pass
-        lines.put(None)
-
-    threading.Thread(target=reader, name="bt-reader", daemon=True).start()
-    result: bool | None = None
-    try:
-        proc.stdin.write(f"select {address}\nconnect {mac}\n")
-        proc.stdin.flush()
-        deadline = time.monotonic() + timeout_s
-        while result is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                logger.warning("bluetooth connect timed out")
-                break
-            try:
-                line = lines.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if line is None:
-                break
-            if any(m in line for m in _SUCCESS):
-                result = True
-            elif any(m in line for m in _FAILURE):
-                result = False
-    except OSError as exc:
-        logger.warning("bluetoothctl session failed: %s", exc)
-    finally:
-        _close_session(proc, graceful=result is not None)
-    return bool(result)
-
-
-def _close_session(proc: Any, *, graceful: bool) -> None:
-    if graceful:
-        try:
-            proc.stdin.write("quit\n")
-            proc.stdin.flush()
-            proc.wait(timeout=_QUIT_WAIT_S)
-            return
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    try:
-        proc.kill()
-    except OSError:
-        logger.exception("could not kill bluetoothctl")
+    return (result.stdout or "").strip() == "b true"
 
 
 def ensure_connected(
-    mac: str,
-    adapter: str = "hci1",
-    run: Callable[..., Any] = subprocess.run,
-    popen: Callable[..., Any] = subprocess.Popen,
-    timeout_s: float = TIMEOUT_S,
-    sysfs: Path = SYSFS_BLUETOOTH,
+    mac: str, adapter: str = "hci1", run: Callable[..., Any] = subprocess.run
 ) -> bool:
+    """Power the adapter on, ask BlueZ to connect over it, and report the outcome."""
     _validate_mac(mac)
-    address = _controller_address(adapter, run, sysfs)
-    if address is None:
-        return False
-    # `select` only lasts within one bluetoothctl session, and `connect` is asynchronous,
-    # so keep one interactive session open until it reports the outcome.
-    return _interactive_connect(address, mac, popen, timeout_s)
+    powered = _busctl(run, ["set-property", "org.bluez", _adapter_path(adapter),
+                            "org.bluez.Adapter1", "Powered", "b", "true"])
+    if powered is None or powered.returncode != 0:
+        logger.warning("could not power on %s", adapter)
+    # Connect blocks until BlueZ replies. The subprocess timeout sits above busctl's own
+    # --timeout so busctl reports the failure first.
+    connected = _busctl(run, ["--timeout=20", "call", "org.bluez", _device_path(mac, adapter),
+                              "org.bluez.Device1", "Connect"], CONNECT_TIMEOUT_S)
+    if connected is None or connected.returncode != 0:
+        logger.warning("bluetooth connect failed on %s", adapter)
+    return is_connected(mac, adapter, run)
 
 
 class BtMonitor:
@@ -186,18 +91,15 @@ class BtMonitor:
         interval_s: float = 30,
         db_factory: Callable[[], sqlite3.Connection] | None = None,
         run: Callable[..., Any] = subprocess.run,
-        popen: Callable[..., Any] = subprocess.Popen,
-        sysfs: Path = SYSFS_BLUETOOTH,
     ) -> None:
         if mac:
             _validate_mac(mac)
-        self._popen = popen
+        _adapter_path(adapter)
         self._mac = mac
         self._adapter = adapter
         self._interval_s = interval_s
         self._db_factory = db_factory
         self._run = run
-        self._sysfs = sysfs
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_state: State = "unconfigured" if not mac else "disconnected"
@@ -219,9 +121,9 @@ class BtMonitor:
     def check_once(self) -> State:
         if not self._mac:
             state: State = "unconfigured"
-        elif is_connected(self._mac, self._run) or ensure_connected(
-            self._mac, self._adapter, self._run, self._popen, sysfs=self._sysfs
-        ):
+        elif is_connected(
+            self._mac, self._adapter, self._run
+        ) or ensure_connected(self._mac, self._adapter, self._run):
             state = "connected"
         else:
             state = "disconnected"

@@ -32,6 +32,6 @@ Setup done. Next manual steps (see README "Finish setup"):
   1. Put cookies.txt in ~/home-studio/secrets/
   2. Edit ~/home-studio/config.local.yaml (speaker MAC, optional API key)
   3. Install Claude Code: sudo npm i -g @anthropic-ai/claude-code, then run `claude` once and /login
-  4. Pair the speaker: bash scripts/pair-bluetooth.sh <MAC> hci1
+  4. Pair the speaker: bash scripts/pair-bluetooth.sh --find, then <MAC> hci1
   5. systemctl --user restart home-studio
 MSG

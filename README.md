@@ -43,12 +43,16 @@ imports nothing.
 These steps need a person; the server runs without them but reports
 `bluetooth: "unconfigured"` and `cookies: "missing"` until they are done.
 
-1. **Pair the Echo.** Say "Alexa, pair Bluetooth". On the Pi run
-   `bluetoothctl`, then `select <controller>` (use `list` to find the USB
-   adapter, `hci1`), `scan on`, and note the Echo's MAC address. Then run
-   `bash ~/home-studio/scripts/pair-bluetooth.sh <ECHO_MAC> hci1`. Check
-   `bluetoothctl info <ECHO_MAC>` shows `Connected: yes`. Put the MAC in
-   `~/home-studio/config.local.yaml` under `bluetooth: speaker_mac:`.
+1. **Pair the Echo.** Say "Alexa, pair Bluetooth", then on the Pi run
+   `bash ~/home-studio/scripts/pair-bluetooth.sh --find` (read-only; it powers
+   `hci1` on, inquires for loudspeaker-class devices and prints `MAC  Name`
+   lines). Pair with the MAC it prints:
+   `bash ~/home-studio/scripts/pair-bluetooth.sh <ECHO_MAC> hci1` (say "Alexa,
+   pair Bluetooth" again if the window has closed). The script verifies the
+   connection over D-Bus on `hci1`; `bluetoothctl info` without `select` asks
+   the built-in controller, so it reports "not available". Put the MAC in
+   `~/home-studio/config.local.yaml` under `bluetooth: speaker_mac:`. The
+   service powers `hci1` on and reconnects automatically at start.
 2. **YouTube cookies.** In a desktop browser logged into YouTube, export
    `cookies.txt` with a "Get cookies.txt LOCALLY" type extension and copy it to
    `~/home-studio/secrets/cookies.txt` on the Pi (`chmod 600`).
