@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,23 @@ def _minimal_video(video_id: str, title: str) -> Video:
     )
 
 
+def _normalize_timestamp(value: Any) -> str:
+    """Return a UTC ISO string like the store's _now(); naive input is taken as UTC."""
+    if not value:
+        return _NO_TIMESTAMP
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return _NO_TIMESTAMP
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _text(value: Any) -> str | None:
+    return None if value is None or value == "" else str(value)
+
+
 def _import_ratings(conn: sqlite3.Connection, entries: Any) -> tuple[int, int]:
     """Insert legacy ratings. Re-runs skip rows already imported (same video/time/value)."""
     imported = skipped = 0
@@ -47,16 +65,16 @@ def _import_ratings(conn: sqlite3.Connection, entries: Any) -> tuple[int, int]:
             skipped += 1
             continue
         rating = entry.get("rating")
-        if rating not in _RATING_LIKED:
+        if not isinstance(rating, str) or rating not in _RATING_LIKED:
             skipped += 1
             continue
         liked = _RATING_LIKED[rating]
-        notes = entry.get("comment") or None
+        notes = _text(entry.get("comment"))
         if liked is None and notes is None:
             skipped += 1  # would violate the ratings CHECK constraint
             continue
         video_id = str(entry["video_id"])
-        created = entry.get("timestamp") or _NO_TIMESTAMP
+        created = _normalize_timestamp(entry.get("timestamp"))
         duplicate = conn.execute(
             "SELECT 1 FROM ratings WHERE video_id = ? AND created_at = ? AND liked IS ?"
             " AND notes IS ?",
@@ -65,7 +83,7 @@ def _import_ratings(conn: sqlite3.Connection, entries: Any) -> tuple[int, int]:
         if duplicate:
             continue
         if get_video(conn, video_id) is None:
-            upsert_video(conn, _minimal_video(video_id, entry.get("title") or ""))
+            upsert_video(conn, _minimal_video(video_id, _text(entry.get("title")) or ""))
         conn.execute(
             "INSERT INTO ratings (video_id, liked, satisfaction, notes, created_at)"
             " VALUES (?, ?, NULL, ?, ?)",
@@ -86,7 +104,12 @@ def _import_taste(conn: sqlite3.Connection, profile: Any) -> int:
     ranked = sorted(weighted, key=lambda kv: kv[1], reverse=True)
     likes = [k for k, v in ranked if v > 0][:_MAX_LIST]
     dislikes = [k for k, v in reversed(ranked) if v < 0][:_MAX_LIST]
-    summary = "Interested in: " + ", ".join(likes[:_SUMMARY_TOPICS])
+    if not likes and not dislikes:
+        return 0
+    if likes:
+        summary = "Interested in: " + ", ".join(likes[:_SUMMARY_TOPICS])
+    else:
+        summary = "Avoids: " + ", ".join(dislikes[:_SUMMARY_TOPICS])
     save_taste(conn, summary, likes, dislikes, "legacy")
     return 1
 
