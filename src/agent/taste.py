@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from itertools import chain, zip_longest
 from string import Template
 from typing import Any, Literal
 
@@ -52,6 +53,7 @@ SEED_PROMPT = Template(
     + _SCHEMA
     + "- Infer from the account data only. Dislikes may be empty if nothing suggests any.\n\n"
     "Account data (kind | title | channel id):\n$lines\n"
+    "$legacy"
 )
 
 _CORRECTIONS_RULE = (
@@ -132,15 +134,41 @@ def remove_trait(
     return _saved(conn, taste.summary, likes, dislikes, "user")
 
 
+def _only_legacy_profiles(conn: sqlite3.Connection) -> bool:
+    """True with no profile at all, or when every profile came from the legacy app."""
+    row = conn.execute("SELECT COUNT(*) FROM taste_profiles WHERE source != 'legacy'").fetchone()
+    return row[0] == 0
+
+
+def _balanced(rows_by_kind: list[list[sqlite3.Row]], limit: int) -> list[sqlite3.Row]:
+    """Round-robin across kinds, so one big kind (subscriptions) cannot crowd out the rest."""
+    interleaved = chain.from_iterable(zip_longest(*rows_by_kind))
+    return [r for r in interleaved if r is not None][:limit]
+
+
+def _legacy_block(taste: TasteProfile | None) -> str:
+    if taste is None or taste.source != "legacy":
+        return ""
+    return (
+        "\nAn earlier profile from the listener's old app (use it as extra context):\n"
+        f"{taste.summary}\n"
+        f"Likes: {'; '.join(taste.likes) or '-'}\n"
+        f"Dislikes: {'; '.join(taste.dislikes) or '-'}\n"
+    )
+
+
 def seed_taste_from_imports(conn: sqlite3.Connection, *, claude: ClaudeRunner) -> TasteProfile | None:
-    """Build a first profile from account imports; None if one exists or nothing was imported."""
-    if latest_taste(conn) is not None:
+    """Build a first profile from account imports (at most 200 lines, balanced across kinds).
+
+    Runs when there is no profile or only legacy ones (their traits are passed along as
+    context); returns None otherwise or when nothing was imported.
+    """
+    if not _only_legacy_profiles(conn):
         return None
-    rows = [row for kind in IMPORT_KINDS for row in imported(conn, kind)]
+    rows = _balanced([imported(conn, kind) for kind in IMPORT_KINDS], MAX_SEED_LINES)
     if not rows:
         return None
-    lines = "\n".join(
-        f"{r['kind']} | {r['title'] or ''} | {r['channel_id'] or ''}" for r in rows[:MAX_SEED_LINES]
-    )
-    summary, likes, dislikes = _parse_taste(claude(SEED_PROMPT.substitute(lines=lines)))
+    lines = "\n".join(f"{r['kind']} | {r['title'] or ''} | {r['channel_id'] or ''}" for r in rows)
+    prompt = SEED_PROMPT.substitute(lines=lines, legacy=_legacy_block(latest_taste(conn)))
+    summary, likes, dislikes = _parse_taste(claude(prompt))
     return _saved(conn, summary, likes, dislikes, "agent")

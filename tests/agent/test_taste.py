@@ -149,3 +149,37 @@ def test_seed_caps_at_200_lines(db):
     seed_taste_from_imports(db, claude=claude)
 
     assert claude.prompts[0].count("history | T") == 200
+
+
+def test_seed_runs_over_a_legacy_only_profile_and_uses_it(db):
+    save_taste(db, "Old summary from the legacy app", ["robotics"], ["drama"], "legacy")
+    record_import(db, "liked", video_id="v1", title="A video")
+    claude = FakeClaude([_reply()])
+    taste = seed_taste_from_imports(db, claude=claude)
+    assert taste is not None and taste.source == "agent"
+    prompt = claude.prompts[0]
+    assert "Old summary from the legacy app" in prompt
+    assert "robotics" in prompt and "drama" in prompt
+
+
+def test_seed_skipped_once_a_non_legacy_profile_exists(db):
+    save_taste(db, "legacy", [], [], "legacy")
+    save_taste(db, "agent made", [], [], "agent")
+    record_import(db, "liked", video_id="v1", title="t")
+    claude = FakeClaude([])
+    assert seed_taste_from_imports(db, claude=claude) is None
+
+
+def test_seed_lines_balanced_across_kinds(db):
+    for i in range(250):
+        record_import(db, "subscription", channel_id=f"UC{i}", title=f"S{i}")
+    for i in range(30):
+        record_import(db, "liked", video_id=f"l{i}", title=f"L{i}")
+    for i in range(100):
+        record_import(db, "history", video_id=f"h{i}", title=f"H{i}")
+    claude = FakeClaude([_reply()])
+    seed_taste_from_imports(db, claude=claude)
+    prompt = claude.prompts[0]
+    assert prompt.count("liked | L") == 30  # a small kind is kept whole
+    assert prompt.count("subscription | S") == 85  # the big ones share the rest
+    assert prompt.count("history | H") == 85
