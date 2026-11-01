@@ -65,6 +65,10 @@ class FakeEngine:
         self._call("toggle_pause")
         if self.item is not None:
             self.paused = not self.paused
+            return
+        with closing(self._db_factory()) as conn:  # idle: start the queue, like the engine
+            self.item = queue.pop_next(conn)
+        self.position, self.paused = 0.0, False
 
     def seek(self, position_s: float) -> None:
         self._call("seek", position_s)

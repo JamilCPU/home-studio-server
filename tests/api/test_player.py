@@ -58,6 +58,15 @@ def test_transport_endpoints_call_engine_and_return_now(api, path, call):
     assert api.engine.calls[0][0] == call
 
 
+def test_toggle_when_idle_starts_queue(api):
+    api.stored(make_video("aaaaaaaaaaa"))
+    with api.conn() as conn:
+        queue.enqueue(conn, "aaaaaaaaaaa", "user")
+    data = api.client.post("/api/player/toggle").json()["data"]
+    assert data["state"] == "playing"
+    assert data["item"]["video_id"] == "aaaaaaaaaaa"
+
+
 def test_toggle_pauses(api):
     _start_playing(api, make_video("aaaaaaaaaaa"))
     data = api.client.post("/api/player/toggle").json()["data"]

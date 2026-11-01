@@ -396,3 +396,57 @@ def test_build_window_ends_three_minutes_after_lead(factory):
     save_morning(conn, MorningSettings(True, "07:45", ALL_DAYS, ("technology",), 3, 20))
     sched, _ = make(factory, Runner(["m1"]))
     assert build(sched, at(2026, 5, 6, 7, 27, 59)) == ["built"]
+
+
+# -- GET /api/morning extras (final review I11) -------------------------------------
+
+from src.scheduler import last_outcome, next_build_at  # noqa: E402
+from src.store.agent import create_request, set_status  # noqa: E402
+from src.store.settings import get_morning  # noqa: E402
+
+
+def test_next_build_at_today_then_tomorrow(factory):
+    conn = factory()
+    settings = get_morning(conn)
+    assert next_build_at(conn, settings, at(2026, 5, 6, 6, 0), "America/Chicago") == at(
+        2026, 5, 6, 7, 40)
+    log_event(conn, "scheduler", "info", "built:2026-05-06")
+    nxt = next_build_at(conn, settings, at(2026, 5, 6, 7, 41), "America/Chicago")
+    assert nxt == at(2026, 5, 7, 7, 40)
+    assert nxt.utcoffset() is not None
+
+
+def test_next_build_at_inside_the_window_when_not_built(factory):
+    conn = factory()
+    nxt = next_build_at(conn, get_morning(conn), at(2026, 5, 6, 7, 41), "America/Chicago")
+    assert nxt == at(2026, 5, 6, 7, 40)
+
+
+def test_next_build_at_skips_disabled_days_and_none_when_disabled(factory):
+    conn = factory()
+    weekend = MorningSettings(True, "07:45", (5, 6), ("tech",), 3)  # 2026-05-06 is Wednesday
+    assert next_build_at(conn, weekend, at(2026, 5, 6, 6, 0), "America/Chicago") == at(
+        2026, 5, 9, 7, 40)
+    off = MorningSettings(False, "07:45", ALL_DAYS, ("tech",), 3)
+    assert next_build_at(conn, off, at(2026, 5, 6, 6, 0), "America/Chicago") is None
+
+
+def test_last_outcome_none_without_morning_request(factory):
+    assert last_outcome(factory(), "America/Chicago") is None
+
+
+def test_last_outcome_from_request_and_events(factory):
+    conn = factory()
+    create_request(conn, "user ask", "user", "now")
+    rid = create_request(conn, "morning", "morning", "end")
+    conn.execute("UPDATE agent_requests SET created_at = '2026-05-06T12:40:00+00:00'"
+                 " WHERE id = ?", (rid,))
+    conn.commit()
+    set_status(conn, rid, "failed", error="rate limited")
+    log_event(conn, "scheduler", "info", "built:2026-05-06")
+    log_event(conn, "scheduler", "warn", "fallback: queued 2")
+    log_event(conn, "scheduler", "info", "started:2026-05-06")
+    assert last_outcome(conn, "America/Chicago") == {
+        "date": "2026-05-06", "built": False, "fallback": True, "started": True,
+        "request_id": rid, "status": "failed",
+    }

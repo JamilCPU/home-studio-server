@@ -6,8 +6,8 @@ from src.store import queue
 from src.store.agent import get_request, set_status
 from tests.api.conftest import make_video
 
-REQUEST_KEYS = {"id", "prompt", "status", "summary", "error", "items", "created_at",
-                "finished_at"}
+REQUEST_KEYS = {"id", "prompt", "kind", "play", "status", "summary", "error", "items",
+                "created_at", "finished_at"}
 
 
 def test_agent_request_202_and_worker_submit_called(api):
@@ -48,6 +48,7 @@ def test_get_agent_request_with_items(api):
     data = resp.json()["data"]
     assert set(data) == REQUEST_KEYS
     assert data["status"] == "done"
+    assert (data["kind"], data["play"]) == ("user", "end")
     assert data["summary"] == "Picked one"
     assert data["finished_at"] is not None
     assert [i["video_id"] for i in data["items"]] == ["aaaaaaaaaaa"]

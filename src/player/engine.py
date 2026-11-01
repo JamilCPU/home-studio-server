@@ -85,9 +85,14 @@ class PlaybackEngine:
             return self._play_item(conn, item)
 
     def toggle_pause(self) -> None:
+        """Pause or resume; when idle, start the queue (does nothing if it is empty)."""
         with self._lock:
             if self._item is not None:
                 self._mpv.set_pause(not self._mpv.paused())
+                return
+            with closing(self._db_factory()) as conn:
+                if queue.upcoming(conn):
+                    self._advance(conn)
 
     def seek(self, position_s: float) -> None:
         with self._lock:

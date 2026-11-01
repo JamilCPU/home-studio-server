@@ -237,3 +237,57 @@ class MorningScheduler:
             except Exception:
                 logger.exception("scheduler tick failed")
             stop_event.wait(TICK_SECONDS)
+
+
+# -- status for GET /api/morning ----------------------------------------------------
+
+
+def next_build_at(
+    conn: sqlite3.Connection, settings: MorningSettings, now: datetime, tz: str
+) -> datetime | None:
+    """When the next morning build starts (aware, local tz), or None when disabled.
+
+    Today's build counts while its window is still open and it has not run yet."""
+    if not settings.enabled or not settings.days:
+        return None
+    zone = ZoneInfo(tz)
+    local = now.astimezone(zone).replace(tzinfo=None)
+    hour, minute = (int(p) for p in settings.wake_time.split(":"))
+    lead = timedelta(minutes=settings.build_lead_min)
+    for offset in range(8):
+        day = local.date() + timedelta(days=offset)
+        if day.weekday() not in settings.days:
+            continue
+        build_at = datetime.combine(day, time(hour, minute)) - lead
+        if build_at + BUILD_WINDOW <= local or event_logged(conn, f"built:{day.isoformat()}"):
+            continue
+        return build_at.replace(tzinfo=zone)
+    return None
+
+
+def last_outcome(conn: sqlite3.Connection, tz: str) -> dict | None:
+    """The latest morning request and what happened around it, or None if there is none.
+
+    ``built``: the agent's picks were queued (request done). ``fallback``: the fallback set
+    was queued after the request was made. ``started``: the scheduled start ran that day.
+    """
+    row = conn.execute(
+        "SELECT id, status, created_at FROM agent_requests WHERE kind = 'morning'"
+        " ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    day = datetime.fromisoformat(row["created_at"]).astimezone(ZoneInfo(tz)).date().isoformat()
+    fallback = conn.execute(
+        "SELECT 1 FROM status_events WHERE component = ? AND message LIKE 'fallback:%'"
+        " AND created_at >= ? LIMIT 1",
+        (COMPONENT, row["created_at"]),
+    ).fetchone()
+    return {
+        "date": day,
+        "built": row["status"] == "done",
+        "fallback": fallback is not None,
+        "started": event_logged(conn, f"started:{day}"),
+        "request_id": row["id"],
+        "status": row["status"],
+    }

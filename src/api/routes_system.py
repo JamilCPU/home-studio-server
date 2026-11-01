@@ -15,6 +15,7 @@ from yt_dlp.version import __version__ as YTDLP_VERSION
 
 from src.api.app import Deps, ok
 from src.api.models import morning_out
+from src.scheduler import last_outcome, next_build_at
 from src.player.engine import OK_MESSAGE
 from src.player.mpv import MpvCommandError, MpvDied
 from src.store.settings import (
@@ -99,13 +100,25 @@ def _player_state(engine) -> str:
         return "unavailable"
 
 
+def morning_response(conn: sqlite3.Connection, tz: str) -> dict:
+    """MorningSettings plus when the next build starts and how the last morning went."""
+    settings = get_morning(conn)
+    nxt = next_build_at(conn, settings, datetime.now(ZoneInfo(tz)), tz)
+    return {
+        **morning_out(settings),
+        "next_build_at": nxt.isoformat() if nxt is not None else None,
+        "last_outcome": last_outcome(conn, tz),
+    }
+
+
 def build_router(deps: Deps) -> APIRouter:
     router = APIRouter()
+    tz = deps.config.timezone
 
     @router.get("/morning")
     def get_settings():
         with closing(deps.db_factory()) as conn:
-            return ok(morning_out(get_morning(conn)))
+            return ok(morning_response(conn, tz))
 
     @router.put("/morning")
     def put_settings(body: MorningBody):
@@ -119,7 +132,7 @@ def build_router(deps: Deps) -> APIRouter:
                 save_morning(conn, settings)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from None
-            return ok(morning_out(get_morning(conn)))
+            return ok(morning_response(conn, tz))
 
     @router.post("/morning/test")
     def morning_test():
