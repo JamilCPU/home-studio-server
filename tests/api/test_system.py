@@ -83,6 +83,20 @@ def test_morning_test_runs_now(api):
     assert api.run_now_calls == [77]
 
 
+FUTURE = 4102444800  # 2100-01-01
+TAB = chr(9)
+
+
+def _line(name, expiry=FUTURE, domain=".youtube.com", prefix=""):
+    return prefix + TAB.join([domain, "TRUE", "/", "TRUE", str(expiry), name, "x"])
+
+
+def _write_cookies(tmp_path, *lines, marker="x"):
+    rows = lines or (_line("__Secure-3PSID"),)
+    text = chr(10).join(["# Netscape HTTP Cookie File", *rows, "# " + marker])
+    (tmp_path / "cookies.txt").write_text(text + chr(10))
+
+
 def _status(api) -> dict:
     resp = api.client.get("/api/status")
     assert resp.status_code == 200
@@ -90,7 +104,7 @@ def _status(api) -> dict:
 
 
 def test_status_shape(api, tmp_path):
-    (tmp_path / "cookies.txt").write_text("# cookies")
+    _write_cookies(tmp_path)
     with api.conn() as conn:
         add_quota(conn, quota_day(), 300)
         log_event(conn, "player", "error", "mpv process died")
@@ -114,7 +128,7 @@ def test_status_cookies_missing(api):
 
 
 def test_status_cookies_expired_after_auth_error(api, tmp_path):
-    (tmp_path / "cookies.txt").write_text("# cookies")
+    _write_cookies(tmp_path)
     with api.conn() as conn:
         log_event(conn, "ytdlp", "error", "SourceAuthError: cookies or sign-in check")
     assert _status(api)["cookies"] == "expired"
@@ -128,13 +142,13 @@ def test_status_cookies_ok_once_cookies_file_replaced(api, tmp_path):
     import time
 
     cookies = tmp_path / "cookies.txt"
-    cookies.write_text("# cookies")
+    _write_cookies(tmp_path)
     old = time.time() - 3600
     os.utime(cookies, (old, old))
     with api.conn() as conn:
         log_event(conn, "ytdlp", "error", "SourceAuthError: cookies or sign-in check")
     assert _status(api)["cookies"] == "expired"
-    cookies.write_text("# fresh cookies")  # re-exported after the error
+    _write_cookies(tmp_path, marker="fresh")  # re-exported after the error
     future = time.time() + 5
     os.utime(cookies, (future, future))
     assert _status(api)["cookies"] == "ok"
@@ -178,3 +192,50 @@ def test_status_player_unavailable_when_mpv_died(api):
 
     api.engine.raise_exc = MpvDied("gone")
     assert _status(api)["player"] == "unavailable"
+
+
+ANON = [_line(n) for n in ("PREF", "SOCS", "YSC", "VISITOR_INFO1_LIVE", "GPS", "__Secure-YNID",
+                           "__Secure-ROLLOUT_TOKEN", "VISITOR_PRIVACY_METADATA")]
+
+
+def test_status_cookies_anonymous_only_is_missing(api, tmp_path):
+    _write_cookies(tmp_path, *ANON)
+    assert _status(api)["cookies"] == "missing"
+
+
+def test_status_cookies_signin_cookie_is_ok(api, tmp_path):
+    _write_cookies(tmp_path, *ANON, _line("__Secure-3PSID"))
+    assert _status(api)["cookies"] == "ok"
+
+
+def test_status_cookies_all_signin_expired_is_missing(api, tmp_path):
+    _write_cookies(tmp_path, *ANON, _line("SID", 1000), _line("LOGIN_INFO", 1000, ".google.com"))
+    assert _status(api)["cookies"] == "missing"
+
+
+def test_status_cookies_httponly_prefix_and_session_cookie(api, tmp_path):
+    _write_cookies(tmp_path, _line("__Secure-1PSID", 0, prefix="#HttpOnly_"))
+    assert _status(api)["cookies"] == "ok"
+
+
+def test_status_cookies_other_domain_ignored(api, tmp_path):
+    _write_cookies(tmp_path, _line("SID", domain=".example.com"))
+    assert _status(api)["cookies"] == "missing"
+
+
+def test_status_cookies_mtime_cache_avoids_reread(api, tmp_path, monkeypatch):
+    import os
+    import src.api.routes_system as rs
+
+    _write_cookies(tmp_path)
+    calls = []
+    real = rs.read_signin_expiry
+    monkeypatch.setattr(rs, "read_signin_expiry", lambda p: calls.append(p) or real(p))
+    assert _status(api)["cookies"] == "ok"
+    assert _status(api)["cookies"] == "ok"
+    assert len(calls) == 1
+    _write_cookies(tmp_path, *ANON, marker="changed")
+    future = os.stat(tmp_path / "cookies.txt").st_mtime + 5
+    os.utime(tmp_path / "cookies.txt", (future, future))
+    assert _status(api)["cookies"] == "missing"
+    assert len(calls) == 2

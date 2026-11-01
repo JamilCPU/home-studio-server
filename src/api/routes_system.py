@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import sqlite3
+import time
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +37,14 @@ _CLAUDE_ERRORS = {
     "ClaudeNotFound": "missing",
 }
 
+SIGNIN_COOKIES = frozenset({
+    "SID", "__Secure-1PSID", "__Secure-3PSID", "LOGIN_INFO", "SAPISID", "__Secure-3PAPISID",
+})
+_SIGNIN_DOMAINS = ("youtube.com", "google.com")
+_HTTPONLY_PREFIX = "#HttpOnly_"
+# path -> (mtime_ns, size, latest sign-in expiry); avoids re-reading on every poll
+_signin_cache: dict[str, tuple[int, int, float | None]] = {}
+
 Day = Annotated[int, Field(ge=0, le=6)]
 Topic = Annotated[str, Field(min_length=1, max_length=100)]
 
@@ -53,11 +63,58 @@ def quota_day(now: datetime | None = None) -> str:
     return (now or datetime.now(QUOTA_TZ)).astimezone(QUOTA_TZ).date().isoformat()
 
 
+def _domain_matches(domain: str) -> bool:
+    host = domain.lstrip(".").lower()
+    return any(host == d or host.endswith("." + d) for d in _SIGNIN_DOMAINS)
+
+
+def read_signin_expiry(path: Path) -> float | None:
+    """Latest expiry (epoch seconds, inf for session cookies) among the YouTube/Google
+    sign-in cookies in a Netscape cookies file, or None if there are none. Only cookie
+    names are inspected; values are never kept or logged."""
+    latest: float | None = None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith(_HTTPONLY_PREFIX):
+            line = line[len(_HTTPONLY_PREFIX):]
+        elif line.startswith("#"):
+            continue
+        fields = line.split(chr(9))
+        if len(fields) < 7 or fields[5] not in SIGNIN_COOKIES or not _domain_matches(fields[0]):
+            continue
+        try:
+            expiry = float(fields[4])
+        except ValueError:
+            continue
+        expiry = math.inf if expiry == 0 else expiry
+        latest = expiry if latest is None else max(latest, expiry)
+    return latest
+
+
+def has_signin_cookies(path: Path) -> bool:
+    """True if the file holds a non-expired sign-in cookie; cached on (mtime, size)."""
+    st = path.stat()
+    key = str(path)
+    cached = _signin_cache.get(key)
+    if cached is None or cached[:2] != (st.st_mtime_ns, st.st_size):
+        cached = (st.st_mtime_ns, st.st_size, read_signin_expiry(path))
+        _signin_cache[key] = cached
+    expiry = cached[2]
+    return expiry is not None and expiry > time.time()
+
+
 def cookies_status(conn: sqlite3.Connection, cookies_path: str) -> str:
-    """"expired" only while the last yt-dlp answer was a sign-in check made after the
-    cookies file was last written; re-exporting the cookies clears it."""
+    """"missing" without a file or without YouTube sign-in cookies (yt-dlp/mpv create
+    anonymous-only files); "expired" only while the last yt-dlp answer was a sign-in
+    check made after the cookies file was last written; re-exporting clears it."""
     path = Path(cookies_path)
-    if not path.exists():
+    try:
+        if not has_signin_cookies(path):
+            return "missing"
+    except OSError:
         return "missing"
     event = latest_event(conn, "ytdlp")
     if event is None or event[0] != "error" or not event[1].startswith("SourceAuthError"):

@@ -55,7 +55,9 @@ These steps need a person; the server runs without them but reports
    service powers `hci1` on and reconnects automatically at start.
 2. **YouTube cookies.** In a desktop browser logged into YouTube, export
    `cookies.txt` with a "Get cookies.txt LOCALLY" type extension and copy it to
-   `~/home-studio/secrets/cookies.txt` on the Pi (`chmod 600`).
+   `~/home-studio/secrets/cookies.txt` on the Pi (`chmod 600`). yt-dlp may create
+   `secrets/cookies.txt` itself with anonymous cookies only (status shows
+   `cookies: "missing"`); simply overwrite it with the exported file.
 3. **Claude login.** On the Pi, run `claude` once and complete `/login`.
    (If `claude` is missing: `sudo npm i -g @anthropic-ai/claude-code`.)
 4. **Import the account once.** After the cookies are in place (and Claude is
