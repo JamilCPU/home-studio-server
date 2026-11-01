@@ -351,3 +351,22 @@ def test_pause_does_not_carry_over_to_next_track(engine, mpv, factory):
     assert engine.now().state == "paused"
     engine.next()
     assert engine.now().state == "playing"
+
+
+def test_on_before_play_called(factory, mpv):
+    seen = []
+    eng = PlaybackEngine(factory, mpv, on_before_play=seen.append)
+    add(factory, "hook1")
+    eng.play_next()
+    assert seen == ["hook1"]
+    assert mpv.calls_named("load")
+
+
+def test_on_before_play_exception_ignored(factory, mpv):
+    def boom(_vid):
+        raise RuntimeError("nope")
+
+    eng = PlaybackEngine(factory, mpv, on_before_play=boom)
+    add(factory, "hook2")
+    assert eng.play_next() is not None
+    assert mpv.calls_named("load")
