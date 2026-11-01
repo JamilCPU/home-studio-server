@@ -65,7 +65,8 @@ def test_status_shape(api, tmp_path):
         log_event(conn, "player", "error", "mpv process died")
     data = _status(api)
     assert set(data) == {"player", "bluetooth", "cookies", "claude", "ytdlp_version",
-                         "quota_used_today", "quota_ceiling", "events"}
+                         "quota_used_today", "quota_ceiling", "events", "source"}
+    assert data["source"] == "ok"
     assert data["player"] == "idle"
     assert data["bluetooth"] == "connected"
     assert data["cookies"] == "ok"
@@ -89,6 +90,34 @@ def test_status_cookies_expired_after_auth_error(api, tmp_path):
     with api.conn() as conn:
         log_event(conn, "ytdlp", "info", "ok")
     assert _status(api)["cookies"] == "ok"
+
+
+def test_status_cookies_ok_once_cookies_file_replaced(api, tmp_path):
+    import os
+    import time
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# cookies")
+    old = time.time() - 3600
+    os.utime(cookies, (old, old))
+    with api.conn() as conn:
+        log_event(conn, "ytdlp", "error", "SourceAuthError: cookies or sign-in check")
+    assert _status(api)["cookies"] == "expired"
+    cookies.write_text("# fresh cookies")  # re-exported after the error
+    future = time.time() + 5
+    os.utime(cookies, (future, future))
+    assert _status(api)["cookies"] == "ok"
+
+
+def test_status_source_broken_until_a_successful_play(api):
+    with api.conn() as conn:
+        log_event(conn, "player", "info", "ok: playing")
+        log_event(conn, "player", "error", "SourceBroken: 3 consecutive playback errors")
+        log_event(conn, "player", "error", "playback failed: X")
+    assert _status(api)["source"] == "broken"
+    with api.conn() as conn:
+        log_event(conn, "player", "info", "ok: playing")
+    assert _status(api)["source"] == "ok"
 
 
 @pytest.mark.parametrize(

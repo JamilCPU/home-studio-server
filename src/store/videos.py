@@ -153,6 +153,17 @@ def end_play(conn: sqlite3.Connection, play_id: int, seconds: float, reason: str
     conn.commit()
 
 
+def close_open_plays(conn: sqlite3.Connection) -> int:
+    """End plays left open by a crash or restart as 'stopped'; returns how many."""
+    cur = conn.execute(
+        "UPDATE plays SET ended_at = ?, end_reason = 'stopped',"
+        " seconds_listened = COALESCE(seconds_listened, 0) WHERE ended_at IS NULL",
+        (_now(),),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def add_rating(
     conn: sqlite3.Connection,
     video_id: str,

@@ -154,6 +154,24 @@ def previous(conn: sqlite3.Connection) -> QueueItem | None:
     return _get(conn, row[0])
 
 
+def requeue_playing(conn: sqlite3.Connection) -> int:
+    """Put every 'playing' item back at the front of the queue (restart recovery)."""
+    rows = conn.execute(
+        "SELECT id FROM queue_items WHERE status = 'playing' ORDER BY position, id"
+    ).fetchall()
+    if not rows:
+        return 0
+    first = _first_queued_position(conn)
+    base = (len(rows) + 1.0 if first is None else first) - len(rows)  # just before `first`
+    for offset, row in enumerate(rows):
+        conn.execute(
+            "UPDATE queue_items SET status = 'queued', position = ? WHERE id = ?",
+            (base + offset, row[0]),
+        )
+    conn.commit()
+    return len(rows)
+
+
 def remove(conn: sqlite3.Connection, item_id: int) -> None:
     mark(conn, item_id, "removed")
 

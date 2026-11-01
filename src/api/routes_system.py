@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
@@ -15,6 +15,7 @@ from yt_dlp.version import __version__ as YTDLP_VERSION
 
 from src.api.app import Deps, ok
 from src.api.models import morning_out
+from src.player.engine import OK_MESSAGE
 from src.player.mpv import MpvCommandError, MpvDied
 from src.store.settings import (
     MorningSettings,
@@ -51,12 +52,30 @@ def quota_day(now: datetime | None = None) -> str:
 
 
 def cookies_status(conn: sqlite3.Connection, cookies_path: str) -> str:
-    if not Path(cookies_path).exists():
+    """"expired" only while the last yt-dlp answer was a sign-in check made after the
+    cookies file was last written; re-exporting the cookies clears it."""
+    path = Path(cookies_path)
+    if not path.exists():
         return "missing"
     event = latest_event(conn, "ytdlp")
-    if event is not None and event[0] == "error" and event[1].startswith("SourceAuthError"):
+    if event is None or event[0] != "error" or not event[1].startswith("SourceAuthError"):
+        return "ok"
+    written = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    try:
+        seen = datetime.fromisoformat(event[2])
+    except ValueError:
         return "expired"
-    return "ok"
+    return "expired" if seen > written else "ok"
+
+
+def source_status(conn: sqlite3.Connection) -> str:
+    """"broken" after SourceBroken until the next successful play ("ok: playing")."""
+    row = conn.execute(
+        "SELECT message FROM status_events WHERE component = 'player'"
+        " AND (message LIKE 'SourceBroken%' OR message = ?) ORDER BY id DESC LIMIT 1",
+        (OK_MESSAGE,),
+    ).fetchone()
+    return "broken" if row is not None and row[0].startswith("SourceBroken") else "ok"
 
 
 def claude_status(conn: sqlite3.Connection) -> str:
@@ -117,6 +136,7 @@ def build_router(deps: Deps) -> APIRouter:
                 "bluetooth": deps.bt.last_state,
                 "cookies": cookies_status(conn, deps.config.cookies_path),
                 "claude": claude_status(conn),
+                "source": source_status(conn),
                 "ytdlp_version": YTDLP_VERSION,
                 "quota_used_today": quota_used(conn, quota_day()),
                 "quota_ceiling": deps.config.quota_ceiling,

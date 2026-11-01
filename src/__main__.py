@@ -103,7 +103,7 @@ class Runtime:
 def chapters_hook(
     db_factory: Callable[[], sqlite3.Connection], ytdlp: Any
 ) -> Callable[[str], None]:
-    """``on_before_play``: fill missing chapters on the hook's own connection."""
+    """``on_started``: fill missing chapters on the hook's own connection."""
 
     def hook(video_id: str) -> None:
         with closing(db_factory()) as conn:
@@ -142,7 +142,7 @@ def build_runtime(config: AppConfig, factories: ServiceFactories | None = None) 
 
 def _wire(config, factories, db_factory, data_api, ytdlp, claude, mpv) -> Runtime:
     """Build the engine and everything around it on top of the sources and mpv."""
-    engine = PlaybackEngine(db_factory, mpv, on_before_play=chapters_hook(db_factory, ytdlp))
+    engine = PlaybackEngine(db_factory, mpv, on_started=chapters_hook(db_factory, ytdlp))
     supervisor = MpvSupervisor(engine, mpv, lambda: factories.mpv(config), db_factory)
     run_fn = partial(run_request, claude=claude, data_api=data_api, ytdlp=ytdlp)
     worker = AgentWorker(
@@ -224,7 +224,8 @@ def import_account(conn: sqlite3.Connection, *, ytdlp: Any, data_api: Any, claud
 
     Then fetches metadata for up to 300 imported videos not yet stored (yt-dlp paces
     its own calls) and seeds the taste profile if there is none. The outcome is an
-    "import" status event; SourceAuthError is also logged for ytdlp. Errors re-raise.
+    "import" status event; SourceAuthError is also logged for ytdlp, and a success logs a
+    ytdlp "ok" (clearing ``cookies: "expired"``). Errors re-raise.
     """
     try:
         counts = _import(conn, ytdlp, data_api, claude)
@@ -234,6 +235,7 @@ def import_account(conn: sqlite3.Connection, *, ytdlp: Any, data_api: Any, claud
         log_event(conn, IMPORT_COMPONENT, "error", f"{type(exc).__name__}: {exc}"[:300])
         raise
     log_event(conn, IMPORT_COMPONENT, "info", f"ok: {counts['videos']} new videos")
+    log_event(conn, "ytdlp", "info", "ok: account import")  # signed-in feeds worked again
     return counts
 
 
@@ -268,6 +270,7 @@ def _start_background(
         ("mpv-supervisor", runtime.supervisor.run_forever),
         ("morning-scheduler", runtime.scheduler.run_forever),
     )
+    runtime.engine.recover()  # before anything can play
     runtime.worker.start()
     runtime.monitor.start()
     for name, fn in loops:

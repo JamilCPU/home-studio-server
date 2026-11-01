@@ -6,19 +6,22 @@ import logging
 import sqlite3
 import threading
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Literal
 
 from src.player.mpv import Mpv, MpvDied
 from src.store import queue
 from src.store.queue import QueueItem
 from src.store.settings import log_event
-from src.store.videos import end_play, start_play
+from src.store.videos import close_open_plays, end_play, get_video, start_play
 
 logger = logging.getLogger(__name__)
 
 COMPONENT = "player"
 RESTART_THRESHOLD_S = 5.0
+MAX_CONSECUTIVE_ERRORS = 3
+BROKEN_MESSAGE = f"SourceBroken: {MAX_CONSECUTIVE_ERRORS} consecutive playback errors"
+OK_MESSAGE = "ok: playing"
 WATCH_URL = "https://www.youtube.com/watch?v={}"
 
 
@@ -35,16 +38,29 @@ class PlaybackEngine:
         self,
         db_factory: Callable[[], sqlite3.Connection],
         mpv: Mpv,
-        on_before_play: Callable[[str], None] | None = None,
+        on_started: Callable[[str], None] | None = None,
     ) -> None:
         self._db_factory = db_factory
         self._mpv = mpv
-        self._on_before_play = on_before_play
+        self._on_started = on_started
         self._lock = threading.Lock()
         self._item: QueueItem | None = None
         self._play_id: int | None = None
+        self._errors = 0  # consecutive playback errors / load failures
+        self._log_ok = True  # log "ok: playing" on the next successful start
+        self._hook_thread: threading.Thread | None = None
 
     # -- public API ---------------------------------------------------------------
+
+    def recover(self) -> None:
+        """After a restart: 'playing' items go back to the queue front, open plays end."""
+        with self._lock, closing(self._db_factory()) as conn:
+            if self._item is not None:
+                return  # this engine is already playing: nothing was left over
+            requeued = queue.requeue_playing(conn)
+            closed = close_open_plays(conn)
+        if requeued or closed:
+            logger.info("recovered %d playing item(s), closed %d open play(s)", requeued, closed)
 
     def play_next(self) -> QueueItem | None:
         """Start the next queued item, ending whatever is playing as skipped."""
@@ -104,26 +120,56 @@ class PlaybackEngine:
             self._mpv = mpv
 
     def handle_event(self, evt: dict) -> None:
-        if evt.get("event") == "mpv-died":
+        event = evt.get("event")
+        if event == "mpv-died":
             self._handle_died()
-            return
-        if evt.get("event") != "end-file":
-            return
-        reason = evt.get("reason")
-        # stop/redirect/quit come from our own actions (replacing or stopping a load).
-        if reason not in ("eof", "error"):
-            return
+        elif event == "file-loaded":
+            self._handle_loaded()
+        elif event == "end-file":
+            # stop/redirect/quit come from our own actions (replacing or stopping a load).
+            if evt.get("reason") in ("eof", "error"):
+                self._handle_end(evt["reason"])
+
+    def _handle_loaded(self) -> None:
+        """mpv resolved and opened the stream: playback really started."""
+        with self._lock:
+            if self._item is None:
+                return
+            self._errors = 0
+            if not self._log_ok:
+                return
+            self._log_ok = False
+            with closing(self._db_factory()) as conn:
+                log_event(conn, COMPONENT, "info", OK_MESSAGE)
+
+    def _handle_end(self, reason: str) -> None:
         with self._lock, closing(self._db_factory()) as conn:
             if self._item is None:
                 return
             if reason == "eof":
+                self._errors = 0
                 self._end_current(conn, "finished", self._duration() or self._position())
-            else:
-                title = self._item.video.title
-                self._end_current(conn, "error")
-                log_event(conn, COMPONENT, "error", f"playback failed: {title}")
-                logger.error("mpv reported a playback error for %s", title)
+                self._advance(conn)
+                return
+            item = self._item
+            self._end_current(conn, "error")
+            log_event(conn, COMPONENT, "error", f"playback failed: {item.video.title}")
+            logger.error("mpv reported a playback error for %s", item.video.title)
+            if self._count_error(conn, item):
+                self._mpv.stop()
+                return
             self._advance(conn)
+
+    def _count_error(self, conn: sqlite3.Connection, item: QueueItem) -> bool:
+        """Count a failure; at the limit put ``item`` back at the front and report broken."""
+        self._errors += 1
+        self._log_ok = True
+        if self._errors < MAX_CONSECUTIVE_ERRORS:
+            return False
+        queue.mark(conn, item.id, "queued")  # it was popped first, so it stays first
+        log_event(conn, COMPONENT, "error", BROKEN_MESSAGE)
+        logger.error("%s; stopped advancing", BROKEN_MESSAGE)
+        return True
 
     def run_forever(self, stop_event: threading.Event) -> None:
         while not stop_event.is_set():
@@ -176,13 +222,16 @@ class PlaybackEngine:
         return self._play_item(conn, queue.pop_next(conn))
 
     def _play_item(self, conn: sqlite3.Connection, item: QueueItem | None) -> QueueItem | None:
-        """Play `item`; a track that fails to load is logged as an error and the next is tried."""
+        """Play `item`; a track that fails to load is logged as an error and the next is tried,
+        until MAX_CONSECUTIVE_ERRORS failures in a row stop the advance."""
         while item is not None:
             status = self._start(conn, item)
             if status == "ok":
                 return item
             if status == "died":
-                return None
+                return None  # no stop() on a dead mpv
+            if self._count_error(conn, item):
+                break
             item = queue.pop_next(conn)
         self._mpv.stop()
         return None
@@ -190,11 +239,6 @@ class PlaybackEngine:
     def _start(self, conn: sqlite3.Connection, item: QueueItem) -> str:
         """Load `item` into mpv; engine state is only set once the load succeeded."""
         play_id = start_play(conn, item.video.video_id, item.id)
-        if self._on_before_play is not None:
-            try:
-                self._on_before_play(item.video.video_id)
-            except Exception:
-                logger.exception("on_before_play hook failed for %s", item.video.video_id)
         try:
             self._mpv.load(WATCH_URL.format(item.video.video_id))
             self._mpv.set_pause(False)  # mpv keeps `pause` across loadfile
@@ -208,4 +252,29 @@ class PlaybackEngine:
             return "died" if died else "failed"
         self._play_id = play_id
         self._item = item
+        self._run_started_hook(item)
         return "ok"
+
+    def _run_started_hook(self, item: QueueItem) -> None:
+        """Run ``on_started`` on its own thread (never under the lock), then refresh the item."""
+        if self._on_started is None:
+            return
+        thread = threading.Thread(
+            target=self._started_hook, args=(item,), name="on-started", daemon=True
+        )
+        self._hook_thread = thread
+        thread.start()
+
+    def _started_hook(self, item: QueueItem) -> None:
+        try:
+            self._on_started(item.video.video_id)  # type: ignore[misc]
+            with closing(self._db_factory()) as conn:
+                video = get_video(conn, item.video.video_id)
+        except Exception:
+            logger.exception("on_started hook failed for %s", item.video.video_id)
+            return
+        if video is None:
+            return
+        with self._lock:
+            if self._item is not None and self._item.id == item.id:
+                self._item = replace(self._item, video=video)

@@ -221,6 +221,7 @@ def test_import_account_logs_ok_event(db):
     yt = FakeYt(feeds={"liked": ["l1", "l2"]})
     import_account(db, ytdlp=yt, data_api=None, claude=FakeClaude([TASTE_JSON]))
     assert latest_event(db, "import")[:2] == ("info", "ok: 2 new videos")
+    assert latest_event(db, "ytdlp")[:2] == ("info", "ok: account import")
 
 
 def test_import_account_logs_error_event(db):
@@ -312,6 +313,22 @@ def test_shutdown_stops_current_play(tmp_path):
     with closing(runtime.deps.db_factory()) as conn:
         assert conn.execute("SELECT end_reason FROM plays").fetchone()[0] == "stopped"
     assert mpv.closed
+
+
+def test_start_background_recovers_leftover_playing_item(tmp_path):
+    runtime = build_runtime(AppConfig(db_path=str(tmp_path / "s.db")), _fake_factories(SlowMpv()))
+    with closing(runtime.deps.db_factory()) as conn:
+        upsert_video(conn, vid("abc"))
+        item_id = queue.enqueue(conn, "abc", "user")
+        queue.mark(conn, item_id, "playing")  # left over from a crash
+        conn.execute("INSERT INTO plays (video_id, queue_item_id, started_at) VALUES ('abc', ?, 'x')",
+                     (item_id,))
+        conn.commit()
+    stop = threading.Event()
+    _stop_background(runtime, stop, _start_background(runtime, stop))
+    with closing(runtime.deps.db_factory()) as conn:
+        assert [i.id for i in queue.upcoming(conn)] == [item_id]
+        assert conn.execute("SELECT end_reason FROM plays").fetchone()[0] == "stopped"
 
 
 def test_serve_start_failure_still_cleans_up(tmp_path):
