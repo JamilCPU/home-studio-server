@@ -6,7 +6,9 @@ Quota resets at midnight Pacific time, so the quota day is the Pacific date.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
+from contextlib import closing
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -82,24 +84,29 @@ class DataApi:
 
             service = build("youtube", "v3", developerKey=api_key, cache_discovery=False)
         self._service = service
+        # googleapiclient's HTTP transport is not thread-safe, and the quota check and
+        # increment must not interleave: one lock covers both.
+        self._lock = threading.Lock()
+
+    def _execute(self, request) -> dict:
+        with self._lock:
+            return request.execute()
 
     def _today(self) -> str:
         return self._clock().astimezone(ZoneInfo(_QUOTA_TZ)).date().isoformat()
 
     def _spend(self, units: int) -> None:
         """Record units, or raise QuotaExceeded (recording nothing) if over the ceiling."""
-        conn = self._db_factory()
         day = self._today()
-        if settings.quota_used(conn, day) + units > self._ceiling:
-            raise QuotaExceeded(f"{units} units would exceed ceiling {self._ceiling}")
-        settings.add_quota(conn, day, units)
+        with self._lock, closing(self._db_factory()) as conn:
+            if settings.quota_used(conn, day) + units > self._ceiling:
+                raise QuotaExceeded(f"{units} units would exceed ceiling {self._ceiling}")
+            settings.add_quota(conn, day, units)
 
     def search(self, query: str, max_results: int = 25) -> list[str]:
         self._spend(SEARCH_COST)
-        resp = (
-            self._service.search()
-            .list(part="id", q=query, type="video", maxResults=max_results)
-            .execute()
+        resp = self._execute(
+            self._service.search().list(part="id", q=query, type="video", maxResults=max_results)
         )
         return [i["id"]["videoId"] for i in resp.get("items", []) if i.get("id", {}).get("videoId")]
 
@@ -108,10 +115,10 @@ class DataApi:
         for start in range(0, len(ids), BATCH_SIZE):
             batch = ids[start : start + BATCH_SIZE]
             self._spend(LIST_COST)
-            resp = (
-                self._service.videos()
-                .list(part="snippet,contentDetails,statistics", id=",".join(batch))
-                .execute()
+            resp = self._execute(
+                self._service.videos().list(
+                    part="snippet,contentDetails,statistics", id=",".join(batch)
+                )
             )
             for item in resp.get("items", []):
                 found[item["id"]] = _to_video(item)
@@ -120,15 +127,15 @@ class DataApi:
 
     def channel_uploads(self, channel_id: str, max_results: int = 25) -> list[str]:
         self._spend(LIST_COST)
-        resp = self._service.channels().list(part="contentDetails", id=channel_id).execute()
+        resp = self._execute(self._service.channels().list(part="contentDetails", id=channel_id))
         items = resp.get("items", [])
         if not items:
             return []
         uploads = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
         self._spend(LIST_COST)
-        resp = (
-            self._service.playlistItems()
-            .list(part="contentDetails", playlistId=uploads, maxResults=max_results)
-            .execute()
+        resp = self._execute(
+            self._service.playlistItems().list(
+                part="contentDetails", playlistId=uploads, maxResults=max_results
+            )
         )
         return [i["contentDetails"]["videoId"] for i in resp.get("items", [])]
