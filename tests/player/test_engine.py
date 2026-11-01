@@ -353,23 +353,76 @@ def test_pause_does_not_carry_over_to_next_track(engine, mpv, factory):
     assert engine.now().state == "playing"
 
 
-def test_on_before_play_called(factory, mpv):
+def _join_hook(eng):
+    if eng._hook_thread is not None:
+        eng._hook_thread.join(timeout=5)
+
+
+def test_on_started_called_after_load(factory, mpv):
     seen = []
-    eng = PlaybackEngine(factory, mpv, on_before_play=seen.append)
+    eng = PlaybackEngine(factory, mpv, on_started=seen.append)
     add(factory, "hook1")
     eng.play_next()
+    _join_hook(eng)
     assert seen == ["hook1"]
     assert mpv.calls_named("load")
 
 
-def test_on_before_play_exception_ignored(factory, mpv):
+def test_on_started_not_called_when_load_fails(factory, mpv):
+    seen = []
+    eng = PlaybackEngine(factory, mpv, on_started=seen.append)
+    add(factory, "bad")
+    mpv.load_errors[url("bad")] = TimeoutError("slow")
+    eng.play_next()
+    _join_hook(eng)
+    assert seen == []
+
+
+def test_on_started_runs_outside_the_engine_lock(factory, mpv):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(_vid):
+        entered.set()
+        release.wait(5)
+
+    eng = PlaybackEngine(factory, mpv, on_started=slow)
+    add(factory, "slow")
+    eng.play_next()
+    assert entered.wait(5)
+    assert eng.now().state == "playing"  # not blocked by the hook
+    release.set()
+    _join_hook(eng)
+
+
+def test_on_started_exception_ignored(factory, mpv):
     def boom(_vid):
         raise RuntimeError("nope")
 
-    eng = PlaybackEngine(factory, mpv, on_before_play=boom)
+    eng = PlaybackEngine(factory, mpv, on_started=boom)
     add(factory, "hook2")
     assert eng.play_next() is not None
-    assert mpv.calls_named("load")
+    _join_hook(eng)
+    assert eng.now().state == "playing"
+
+
+def test_now_shows_chapters_filled_by_the_hook(factory, mpv):
+    from dataclasses import replace
+
+    from src.store.videos import Chapter, get_video
+
+    def fill(video_id):
+        conn = factory()
+        try:
+            video = get_video(conn, video_id)
+            upsert_video(conn, replace(video, chapters=(Chapter("Intro", 0.0),)))
+        finally:
+            conn.close()
+
+    eng = PlaybackEngine(factory, mpv, on_started=fill)
+    add(factory, "ch")
+    eng.play_next()
+    _join_hook(eng)
+    assert eng.now().item.video.chapters == (Chapter("Intro", 0.0),)
 
 
 def test_replace_mpv_routes_later_calls_to_new_mpv(engine, mpv, factory):
@@ -395,3 +448,121 @@ def test_replace_mpv_when_idle_keeps_queue(engine, factory):
     engine.replace_mpv(FakeMpv())
     assert queue_statuses(factory) == ["queued"]
     assert plays(factory) == []
+
+
+def player_events(factory):
+    conn = factory()
+    try:
+        return [(e["level"], e["message"]) for e in recent_events(conn, 100)
+                if e["component"] == "player"][::-1]
+    finally:
+        conn.close()
+
+
+def test_three_error_ends_stop_advancing_and_requeue(engine, mpv, factory):
+    for v in "abcde":
+        add(factory, v)
+    engine.play_next()
+    for _ in range(3):
+        engine.handle_event({"event": "end-file", "reason": "error"})
+    assert engine.now().state == "idle"
+    conn = factory()
+    try:
+        assert [i.video.video_id for i in queue.upcoming(conn)] == ["c", "d", "e"]
+    finally:
+        conn.close()
+    assert len(mpv.calls_named("load")) == 3
+    assert player_events(factory)[-1] == ("error", "SourceBroken: 3 consecutive playback errors")
+
+
+def test_three_load_failures_stop_draining_queue(engine, mpv, factory):
+    for v in "abcde":
+        add(factory, v)
+        mpv.load_errors[url(v)] = TimeoutError("slow")
+    assert engine.play_next() is None
+    assert engine.now().state == "idle"
+    conn = factory()
+    try:
+        assert [i.video.video_id for i in queue.upcoming(conn)] == ["c", "d", "e"]
+    finally:
+        conn.close()
+    assert player_events(factory)[-1][1].startswith("SourceBroken")
+
+
+def test_success_resets_error_count(engine, mpv, factory):
+    for v in "abcdef":
+        add(factory, v)
+    engine.play_next()
+    engine.handle_event({"event": "end-file", "reason": "error"})
+    engine.handle_event({"event": "end-file", "reason": "error"})
+    engine.handle_event({"event": "file-loaded"})
+    engine.handle_event({"event": "end-file", "reason": "error"})
+    engine.handle_event({"event": "end-file", "reason": "error"})
+    assert engine.now().state == "playing"
+    assert not any(m.startswith("SourceBroken") for _, m in player_events(factory))
+
+
+def test_eof_resets_error_count(engine, mpv, factory):
+    for v in "abcdef":
+        add(factory, v)
+    engine.play_next()
+    engine.handle_event({"event": "end-file", "reason": "error"})
+    engine.handle_event({"event": "end-file", "reason": "error"})
+    engine.handle_event({"event": "end-file", "reason": "eof"})
+    engine.handle_event({"event": "end-file", "reason": "error"})
+    assert engine.now().state == "playing"
+
+
+def test_file_loaded_logs_ok_once_after_errors(engine, mpv, factory):
+    add(factory, "a")
+    add(factory, "b")
+    engine.play_next()
+    engine.handle_event({"event": "file-loaded"})
+    engine.handle_event({"event": "end-file", "reason": "error"})
+    engine.handle_event({"event": "file-loaded"})
+    engine.handle_event({"event": "file-loaded"})
+    oks = [m for _, m in player_events(factory) if m == "ok: playing"]
+    assert len(oks) == 2  # first start, then the first start after an error
+    assert player_events(factory)[-1] == ("info", "ok: playing")
+
+
+def test_recover_requeues_playing_and_closes_open_plays(factory, mpv):
+    add(factory, "a")
+    add(factory, "b")
+    first = PlaybackEngine(factory, mpv)
+    first.play_next()  # the server dies here: a is 'playing', its play is open
+    conn = factory()
+    try:
+        conn.execute("UPDATE plays SET seconds_listened = NULL")
+        conn.commit()
+    finally:
+        conn.close()
+    fresh = PlaybackEngine(factory, FakeMpv())
+    fresh.recover()
+    conn = factory()
+    try:
+        assert [i.video.video_id for i in queue.upcoming(conn)] == ["a", "b"]
+        assert queue.current(conn) is None
+    finally:
+        conn.close()
+    row = plays(factory)[0]
+    assert row["end_reason"] == "stopped" and row["ended_at"] is not None
+    assert row["seconds_listened"] == 0
+
+
+def test_recover_puts_playing_item_before_queued(factory, mpv):
+    add(factory, "a")
+    add(factory, "b")
+    PlaybackEngine(factory, mpv).play_next()
+    conn = factory()
+    try:
+        conn.execute("UPDATE queue_items SET position = 99 WHERE status = 'playing'")
+        conn.commit()
+    finally:
+        conn.close()
+    PlaybackEngine(factory, FakeMpv()).recover()
+    conn = factory()
+    try:
+        assert [i.video.video_id for i in queue.upcoming(conn)] == ["a", "b"]
+    finally:
+        conn.close()
