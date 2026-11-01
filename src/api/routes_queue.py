@@ -44,13 +44,6 @@ class OrderBody(BaseModel):
     ids: list[int]
 
 
-class _NoDataApi:
-    """Stand-in when there is no API key: makes ensure_videos fall back to yt-dlp."""
-
-    def video_details(self, ids: list[str]) -> list[Video]:
-        raise QuotaExceeded("no YouTube Data API key configured")
-
-
 def parse_video_id(url: str) -> str | None:
     """The video id from a watch?v=, youtu.be/ or shorts/ link, else None."""
     parsed = urlparse(url if "://" in url else f"https://{url}")
@@ -91,7 +84,7 @@ def _auth_failed(conn: sqlite3.Connection, exc: SourceAuthError) -> HTTPExceptio
 def fetch_videos(conn: sqlite3.Connection, deps: Deps, ids: list[str]) -> list[Video]:
     """Catalog lookup; ids that cannot be fetched are dropped."""
     try:
-        return ensure_videos(conn, ids, deps.data_api or _NoDataApi(), deps.ytdlp)
+        return ensure_videos(conn, ids, deps.data_api, deps.ytdlp)
     except SourceAuthError as exc:
         raise _auth_failed(conn, exc) from None
 
@@ -102,6 +95,8 @@ def _search_ids(conn: sqlite3.Connection, deps: Deps, q: str) -> list[str]:
             return deps.data_api.search(q, max_results=SEARCH_RESULTS)
         except QuotaExceeded:
             logger.warning("Data API quota exhausted; searching with yt-dlp")
+        except Exception:  # noqa: BLE001 - any Data API failure falls back to yt-dlp
+            logger.exception("Data API search failed; searching with yt-dlp")
     try:
         return deps.ytdlp.search(q, n=SEARCH_RESULTS)
     except SourceAuthError as exc:

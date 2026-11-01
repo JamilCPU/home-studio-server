@@ -31,25 +31,11 @@ class TestAppConfig:
         assert config.project_id == ""
         assert config.max_candidates == 80
         assert config.transcript_candidates == 30
-        assert config.min_score == 7.0
-        assert config.max_feed_size == 15
-        assert config.search_topics == ()
-        assert config.min_duration_minutes == 5
-        assert config.max_duration_minutes == 60
-        assert config.recency_hours == 48
         assert config.language == "en"
         assert config.claude_command == "claude"
         assert config.max_prompt_tokens == 50000
-        assert config.snapcast_port == 1704
-        assert config.snapcast_control_port == 1705
-        assert config.sample_rate == 48000
-        assert config.channels == 2
-        assert config.snap_fifo == "/tmp/snapfifo"
-        assert config.curation_time == "04:00"
-        assert config.default_wakeup_time == "07:30"
         assert config.api_host == "0.0.0.0"
         assert config.api_port == 8765
-        assert config.bt_devices == {}
 
     def test_frozen_direct_assignment_raises(self, sample_config: AppConfig) -> None:
         with pytest.raises(FrozenInstanceError):
@@ -62,16 +48,10 @@ class TestAppConfig:
         assert sample_config.max_candidates == 80
 
     def test_custom_values(self) -> None:
-        config = AppConfig(
-            client_id="my-id",
-            max_candidates=50,
-            search_topics=("python", "rust"),
-            bt_devices={"speaker": "AA:BB:CC:DD:EE:FF"},
-        )
+        config = AppConfig(client_id="my-id", max_candidates=50, bt_speaker_mac="AA:BB")
         assert config.client_id == "my-id"
         assert config.max_candidates == 50
-        assert config.search_topics == ("python", "rust")
-        assert config.bt_devices == {"speaker": "AA:BB:CC:DD:EE:FF"}
+        assert config.bt_speaker_mac == "AA:BB"
 
 
 # ---------------------------------------------------------------------------

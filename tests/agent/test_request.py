@@ -122,6 +122,16 @@ def test_falls_back_to_ytdlp_search_on_quota(db):
     assert len(ids) == 1
 
 
+def test_without_data_api_searches_ytdlp(db):
+    yt = FakeYt(["a", "b"])
+    claude = FakeClaude([plan(), shortlist("a"), picks(("a", "r"))])
+    rid = create_request(db, "learn ROS 2", "user", "end")
+    ids = run_request(db, rid, claude=claude, data_api=None, ytdlp=yt)
+    assert yt.searched == ["ros 2"]
+    assert len(ids) == 1
+    assert get_request(db, rid).status == "done"
+
+
 def test_excludes_disliked_and_recently_played(db):
     for v in ("a", "b", "c"):
         upsert_video(db, vid(v))

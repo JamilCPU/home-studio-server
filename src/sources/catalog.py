@@ -18,31 +18,40 @@ COMPONENT = "catalog"
 
 
 def ensure_videos(
-    conn: sqlite3.Connection, ids: list[str], data_api: DataApi, ytdlp: YtDlp
+    conn: sqlite3.Connection, ids: list[str], data_api: DataApi | None, ytdlp: YtDlp
 ) -> list[Video]:
     """Return Videos for `ids` in input order, fetching only those not yet stored.
 
-    Ids that cannot be fetched are skipped. SourceAuthError propagates.
+    Without a Data API (no key) or once its quota is spent, yt-dlp fetches the
+    metadata. Ids that cannot be fetched are skipped. SourceAuthError propagates.
     """
     unique = list(dict.fromkeys(ids))
     missing = [i for i in unique if get_video(conn, i) is None]
     if missing:
-        try:
-            fetched = data_api.video_details(missing)
-        except QuotaExceeded:
-            logger.warning("Data API quota exhausted; using yt-dlp for %d ids", len(missing))
-            for video_id in missing:
-                try:
-                    upsert_video(conn, ytdlp.metadata(video_id))
-                except SourceAuthError:
-                    raise
-                except SourceError as exc:
-                    logger.warning("yt-dlp metadata failed for %s: %s", video_id, exc)
-            fetched = []
+        fetched: list[Video] = []
+        if data_api is None:
+            _ytdlp_metadata(conn, missing, ytdlp)
+        else:
+            try:
+                fetched = data_api.video_details(missing)
+            except QuotaExceeded:
+                logger.warning("Data API quota exhausted; using yt-dlp for %d ids", len(missing))
+                _ytdlp_metadata(conn, missing, ytdlp)
         for video in fetched:
             upsert_video(conn, video)
     found = (get_video(conn, i) for i in unique)
     return [v for v in found if v is not None]
+
+
+def _ytdlp_metadata(conn: sqlite3.Connection, ids: list[str], ytdlp: YtDlp) -> None:
+    """Store yt-dlp metadata for each id; per-video failures are skipped."""
+    for video_id in ids:
+        try:
+            upsert_video(conn, ytdlp.metadata(video_id))
+        except SourceAuthError:
+            raise
+        except SourceError as exc:
+            logger.warning("yt-dlp metadata failed for %s: %s", video_id, exc)
 
 
 def ensure_transcript(

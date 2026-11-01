@@ -63,6 +63,13 @@ def test_catalog_falls_back_on_quota(db):
     assert [v.video_id for v in out] == ["a", "c"]
 
 
+def test_catalog_without_data_api_uses_ytdlp(db):
+    yt = FakeYt()
+    out = catalog.ensure_videos(db, ["a", "b"], None, yt)
+    assert [v.video_id for v in out] == ["a", "b"]
+    assert yt.meta_calls == ["a", "b"]
+
+
 def test_catalog_fallback_propagates_auth_error(db):
     yt = FakeYt(fail={"a": SourceAuthError("cookies")})
     with pytest.raises(SourceAuthError):

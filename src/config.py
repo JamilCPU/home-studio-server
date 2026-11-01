@@ -42,13 +42,21 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+def _resolve(base_dir: Path, value: str) -> str:
+    """A relative path from the YAML is relative to the config file's directory."""
+    candidate = Path(value)
+    return str(candidate if candidate.is_absolute() else base_dir / candidate)
+
+
 def load_config(path: Path = Path("config.yaml")) -> AppConfig:
     """Load application configuration.
 
     1. Read *path* (default ``config.yaml``).
     2. If a sibling ``config.local.yaml`` exists, deep-merge it on top.
     3. Map the nested YAML structure to the flat ``AppConfig`` dataclass.
-    4. Apply environment variable overrides for OAuth credentials.
+       Relative ``db.path`` and ``youtube.cookies_path`` values are resolved
+       against the config file's directory (env var paths are used as given).
+    4. Apply environment variable overrides.
     """
     logger.info("Loading config from %s", path)
 
@@ -67,21 +75,13 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
     youtube = raw.get("youtube", {})
     curation = raw.get("curation", {})
     scoring = raw.get("scoring", {})
-    playback = raw.get("playback", {})
-    schedule = raw.get("schedule", {})
     api = raw.get("api", {})
     bluetooth = raw.get("bluetooth", {})
     db = raw.get("db", {})
     player = raw.get("player", {})
     agent = raw.get("agent", {})
     general = raw.get("general", {})
-
-    # Convert search_topics list to tuple for the frozen dataclass
-    search_topics_raw = curation.get("search_topics", ())
-    search_topics = tuple(search_topics_raw) if search_topics_raw else ()
-
-    # Bluetooth devices live under bluetooth.devices in the YAML
-    bt_devices: dict[str, str] = bluetooth.get("devices", {}) or {}
+    base_dir = Path(path).resolve().parent
 
     # -- Environment variable overrides ------------------------------------
 
@@ -111,9 +111,8 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
     bt_speaker_mac = os.environ.get(
         "HOME_STUDIO_BT_SPEAKER_MAC", bluetooth.get("speaker_mac", "")
     )
-    cookies_path = os.environ.get(
-        "HOME_STUDIO_COOKIES_PATH",
-        youtube.get("cookies_path", "secrets/cookies.txt"),
+    cookies_path = os.environ.get("HOME_STUDIO_COOKIES_PATH") or _resolve(
+        base_dir, youtube.get("cookies_path", "secrets/cookies.txt")
     )
 
     return AppConfig(
@@ -124,34 +123,15 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         # Curation
         max_candidates=curation.get("max_candidates", 80),
         transcript_candidates=curation.get("transcript_candidates", 30),
-        min_score=float(curation.get("min_score", 7.0)),
-        max_feed_size=curation.get("max_feed_size", 15),
-        search_topics=search_topics,
-        min_duration_minutes=curation.get("min_duration_minutes", 5),
-        max_duration_minutes=curation.get("max_duration_minutes", 60),
-        recency_hours=curation.get("recency_hours", 48),
         language=curation.get("language", "en"),
         # Scoring
-        claude_command=agent.get(
-            "claude_command", scoring.get("claude_command", "claude")
-        ),
+        claude_command=agent.get("claude_command", "claude"),
         max_prompt_tokens=scoring.get("max_prompt_tokens", 50000),
-        # Playback
-        snapcast_port=playback.get("snapcast_port", 1704),
-        snapcast_control_port=playback.get("snapcast_control_port", 1705),
-        sample_rate=playback.get("sample_rate", 48000),
-        channels=playback.get("channels", 2),
-        snap_fifo=playback.get("snap_fifo", "/tmp/snapfifo"),
-        # Schedule
-        curation_time=schedule.get("curation_time", "04:00"),
-        default_wakeup_time=schedule.get("default_wakeup_time", "07:30"),
         # API
         api_host=api.get("host", "0.0.0.0"),
         api_port=api.get("port", 8765),
-        # Bluetooth
-        bt_devices=bt_devices,
         # Home Studio
-        db_path=db.get("path", "data/home_studio.db"),
+        db_path=_resolve(base_dir, db.get("path", "data/home_studio.db")),
         youtube_api_key=youtube_api_key,
         cookies_path=cookies_path,
         mpv_socket=player.get("mpv_socket", "/tmp/home-studio-mpv.sock"),

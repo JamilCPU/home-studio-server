@@ -30,8 +30,7 @@ dev = [
 ]
 
 [project.scripts]
-brainwash = "src.__main__:main"
-brainwash-api = "src.api:start_server"
+home-studio = "src.__main__:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -44,6 +43,10 @@ target-version = "py311"
 [tool.black]
 line-length = 100
 target-version = ["py311"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*"]
 
 [tool.setuptools.package-data]
 "src.db" = ["migrations/*.sql"]
