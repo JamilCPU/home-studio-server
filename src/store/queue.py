@@ -135,9 +135,12 @@ def pop_next(conn: sqlite3.Connection) -> QueueItem | None:
 
 
 def previous(conn: sqlite3.Connection) -> QueueItem | None:
-    """Replay the most recently played item; the current one returns to the queue front."""
+    """Replay the most recently played item (latest play start, so a reorder does not
+    confuse it); the current one returns to the queue front."""
     row = conn.execute(
-        "SELECT id FROM queue_items WHERE status = 'played' ORDER BY id DESC LIMIT 1"
+        "SELECT q.id, MAX(p.started_at) AS last_start FROM queue_items q"
+        " LEFT JOIN plays p ON p.queue_item_id = q.id WHERE q.status = 'played'"
+        " GROUP BY q.id ORDER BY last_start IS NULL, last_start DESC, q.id DESC LIMIT 1"
     ).fetchone()
     if row is None:
         return None

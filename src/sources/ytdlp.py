@@ -74,12 +74,21 @@ def _pick_track(tracks: dict[str, list[dict]] | None, lang: str) -> str | None:
     return None
 
 
+def _list(value: Any) -> list:
+    return value if isinstance(value, list) else []
+
+
 def _parse_json3(raw: bytes | str) -> str:
+    """Caption text from a json3 track; "" for any unexpected shape (ValueError if not JSON)."""
     data = json.loads(raw)
+    if not isinstance(data, dict):
+        return ""
     parts = [
-        seg.get("utf8", "")
-        for event in data.get("events", [])
-        for seg in event.get("segs") or []
+        seg["utf8"]
+        for event in _list(data.get("events"))
+        if isinstance(event, dict)
+        for seg in _list(event.get("segs"))
+        if isinstance(seg, dict) and isinstance(seg.get("utf8"), str)
     ]
     return re.sub(r"\s+", " ", "".join(parts)).strip()
 

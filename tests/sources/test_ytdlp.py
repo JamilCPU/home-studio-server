@@ -253,3 +253,11 @@ def test_transcript_non_json_body_is_source_error():
     f.raw["a"] = b"<html>nope</html>"
     with pytest.raises(SourceError):
         _ytdlp(f).transcript("v")
+
+
+@pytest.mark.parametrize("body", [b"[1, 2]", b"null", b'"text"', b'{"events": 5}',
+                                  b'{"events": [{"segs": ["x", {"utf8": 3}]}, 7]}'])
+def test_transcript_odd_json_shapes_give_no_transcript(body):
+    f = Factory(info=_TRACK)
+    f.raw["a"] = body
+    assert _ytdlp(f).transcript("v") is None

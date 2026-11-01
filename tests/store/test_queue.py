@@ -142,3 +142,18 @@ def test_item_carries_metadata(db):
     assert (item.id, item.source, item.reason, item.status) == (item_id, "agent", "because", "queued")
     assert item.agent_request_id is None and item.added_at
     assert item.video.title == "T a"
+
+
+def test_previous_uses_latest_play_not_highest_id(db):
+    from src.store.videos import start_play
+
+    ids_ = {v: queue.enqueue(db, add_video(db, v), "user") for v in ("a", "b", "c")}
+    queue.reorder(db, [ids_["c"], ids_["b"], ids_["a"]])
+    for n, expected in enumerate(("c", "b", "a")):
+        item = queue.pop_next(db)
+        assert item.video.video_id == expected
+        play = start_play(db, expected, item.id)
+        db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (f"2026-11-01T10:0{n}:00", play))
+        db.commit()
+    assert queue.previous(db).video.video_id == "b"  # c has the higher id but played first
+    assert ids(queue.upcoming(db)) == ["a"]
