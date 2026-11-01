@@ -58,6 +58,7 @@ class MorningScheduler:
         self._build_thread: threading.Thread | None = None
         self._import_fn = import_fn
         self._import_thread: threading.Thread | None = None
+        self._fallback_day: date | None = None
 
     # -- scheduled ticks ----------------------------------------------------------
 
@@ -132,11 +133,16 @@ class MorningScheduler:
     def _maybe_start(
         self, conn: sqlite3.Connection, settings: MorningSettings, day: date
     ) -> list[str]:
+        """Start the morning once; ``started:<day>`` is logged only after it really
+        started (or the listener is already playing), so later ticks retry a failure."""
         message = f"started:{day.isoformat()}"
         if event_logged(conn, message):
             return []
+        outcome = self._start(conn, settings, day)
+        if outcome == "retry":
+            return []
         log_event(conn, COMPONENT, "info", message)
-        return ["started"] if self._start(conn, settings) else []
+        return ["started"] if outcome == "played" else []
 
     # -- shared steps -------------------------------------------------------------
 
@@ -162,24 +168,42 @@ class MorningScheduler:
         except Exception:
             logger.exception("fallback morning failed")
 
-    def _start(self, conn: sqlite3.Connection, settings: MorningSettings) -> bool:
-        """Put morning items first and play if idle; True when playback was started.
+    def _start(
+        self, conn: sqlite3.Connection, settings: MorningSettings, day: date | None = None
+    ) -> str:
+        """Put morning items first and play them: "played", "busy" or "retry".
 
-        With nothing morning-sourced queued (build crashed or still running), the
-        fallback set is queued first so the morning is never silent.
+        Something actively playing is left alone ("busy"). A paused item is stopped,
+        which puts it back in the queue behind the morning items. With nothing
+        morning-sourced queued (build crashed or still running), the fallback set is
+        queued first (once per day) so the morning is never silent.
         """
-        if self._engine.now().state != "idle":
-            return False
-        queued = queue.upcoming(conn)
-        if not any(i.source in MORNING_SOURCES for i in queued):
+        state = self._engine.now().state
+        if state == "playing":
+            return "busy"
+        if not self._has_morning(conn) and self._fallback_due(day):
             self._safe_fallback(conn, settings)
-            queued = queue.upcoming(conn)
+        if not self._has_morning(conn):
+            return "retry"  # leave a paused item alone when there is nothing to play
+        if state == "paused":
+            self._engine.stop()
+        queued = queue.upcoming(conn)
         morning = [i.id for i in queued if i.source in MORNING_SOURCES]
-        if not morning:
-            return False
         rest = [i.id for i in queued if i.source not in MORNING_SOURCES]
         queue.reorder(conn, morning + rest)
-        self._engine.play_next()
+        return "played" if self._engine.play_next() is not None else "retry"
+
+    @staticmethod
+    def _has_morning(conn: sqlite3.Connection) -> bool:
+        return any(i.source in MORNING_SOURCES for i in queue.upcoming(conn))
+
+    def _fallback_due(self, day: date | None) -> bool:
+        """The start-time fallback runs once per day (always for a manual run)."""
+        if day is None:
+            return True
+        if self._fallback_day == day:
+            return False
+        self._fallback_day = day
         return True
 
     # -- manual trigger -----------------------------------------------------------
