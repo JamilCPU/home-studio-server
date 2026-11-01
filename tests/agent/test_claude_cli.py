@@ -150,3 +150,19 @@ def test_fake_claude_scripts_and_records():
     assert fake.prompts == ["p1", "p2"]
     with pytest.raises(AssertionError):
         fake("p3")
+
+
+def test_long_json_stdout_mentioning_rate_limit_is_returned_unchanged():
+    body = '{"reason": "covers API rate limit design", "pad": "' + "x" * 300 + '"}'
+    assert run_claude("x", runner=_runner(stdout=body, returncode=0)) == body
+
+
+def test_short_usage_limit_stdout_with_exit_zero_still_raises():
+    with pytest.raises(ClaudeRateLimited):
+        run_claude("x", runner=_runner(stdout="Claude usage limit reached. Resets at 5pm."))
+
+
+def test_stderr_marker_with_exit_zero_still_raises():
+    long_ok = "y" * 400
+    with pytest.raises(ClaudeRateLimited):
+        run_claude("x", runner=_runner(stdout=long_ok, stderr="rate limit", returncode=0))
