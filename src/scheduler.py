@@ -1,4 +1,5 @@
-"""Morning scheduler: builds the wake-up set shortly before wake time and starts it.
+"""Morning scheduler: builds the wake-up set ``build_lead_min`` (default 5) minutes before
+wake time and starts it at wake time.
 
 It also runs the daily account import at 04:00 local when an import function is given.
 """
@@ -20,7 +21,6 @@ from src.store.settings import MorningSettings, get_morning, log_event
 
 logger = logging.getLogger(__name__)
 
-BUILD_LEAD = timedelta(minutes=5)
 BUILD_WINDOW = timedelta(minutes=3)
 START_WINDOW = timedelta(minutes=10)
 TICK_SECONDS = 20
@@ -72,7 +72,7 @@ class MorningScheduler:
                 return actions
             hour, minute = (int(p) for p in settings.wake_time.split(":"))
             wake = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            build_at = wake - BUILD_LEAD
+            build_at = wake - timedelta(minutes=settings.build_lead_min)
             if build_at <= local < build_at + BUILD_WINDOW:
                 actions.extend(self._maybe_build(conn, settings, local.date()))
             if wake <= local < wake + START_WINDOW:

@@ -13,6 +13,7 @@ from src.store.settings import MorningSettings
 def test_get_morning_defaults(db):
     s = settings.get_morning(db)
     assert s.enabled is True and s.wake_time == "07:45" and s.count == 3
+    assert s.build_lead_min == 5
     assert s.days == (0, 1, 2, 3, 4, 5, 6)
     assert s.topics == ("technology", "AI", "hardware", "engineering", "news/politics")
 
@@ -26,7 +27,8 @@ def test_save_morning_rejects_bad_time(db, bad):
 
 @pytest.mark.parametrize(
     "change",
-    [{"days": (7,)}, {"days": (-1,)}, {"count": 0}, {"count": 7}, {"topics": ()}],
+    [{"days": (7,)}, {"days": (-1,)}, {"count": 0}, {"count": 7}, {"topics": ()},
+     {"build_lead_min": 0}, {"build_lead_min": 61}],
 )
 def test_save_morning_rejects_bad_fields(db, change):
     with pytest.raises(ValueError):
@@ -65,3 +67,8 @@ def test_record_import_and_imported(db):
     subs = settings.imported(db, "subscription")
     assert len(subs) == 1 and subs[0]["channel_id"] == "UC1"
     assert [r["video_id"] for r in settings.imported(db, "liked")] == ["v1"]
+
+
+def test_save_morning_build_lead_roundtrip(db):
+    settings.save_morning(db, replace(settings.get_morning(db), build_lead_min=15))
+    assert settings.get_morning(db).build_lead_min == 15

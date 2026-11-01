@@ -17,19 +17,32 @@ def test_get_morning_defaults(api):
     assert resp.json()["data"] == {
         "enabled": True, "wake_time": "07:45", "days": [0, 1, 2, 3, 4, 5, 6],
         "topics": ["technology", "AI", "hardware", "engineering", "news/politics"], "count": 3,
+        "build_lead_min": 5,
     }
+
+
+def _settings(data: dict) -> dict:
+    return {k: data[k] for k in MORNING}
 
 
 def test_put_morning(api):
     resp = api.client.put("/api/morning", json=MORNING)
     assert resp.status_code == 200
-    assert resp.json()["data"] == MORNING
-    assert api.client.get("/api/morning").json()["data"] == MORNING
+    assert _settings(resp.json()["data"]) == MORNING
+    assert _settings(api.client.get("/api/morning").json()["data"]) == MORNING
+
+
+def test_put_morning_build_lead(api):
+    data = api.client.put("/api/morning", json={**MORNING, "build_lead_min": 20}).json()["data"]
+    assert data["build_lead_min"] == 20
+    again = api.client.put("/api/morning", json=MORNING).json()["data"]  # omitted: kept
+    assert again["build_lead_min"] == 20
 
 
 @pytest.mark.parametrize(
     "change, field",
-    [({"wake_time": "7:45"}, "wake_time"), ({"count": 7}, "count"), ({"days": [7]}, "days")],
+    [({"wake_time": "7:45"}, "wake_time"), ({"count": 7}, "count"), ({"days": [7]}, "days"),
+     ({"build_lead_min": 0}, "build_lead_min"), ({"build_lead_min": 61}, "build_lead_min")],
 )
 def test_put_morning_field_validation(api, change, field):
     resp = api.client.put("/api/morning", json={**MORNING, **change})

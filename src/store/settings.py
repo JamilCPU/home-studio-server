@@ -22,6 +22,7 @@ class MorningSettings:
     days: tuple[int, ...]
     topics: tuple[str, ...]
     count: int
+    build_lead_min: int = 5  # the build starts this many minutes before wake time
 
 
 def get_morning(conn: sqlite3.Connection) -> MorningSettings:
@@ -32,6 +33,7 @@ def get_morning(conn: sqlite3.Connection) -> MorningSettings:
         days=tuple(json.loads(row["days_json"])),
         topics=tuple(json.loads(row["topics_json"])),
         count=row["count"],
+        build_lead_min=row["build_lead_min"],
     )
 
 
@@ -44,19 +46,22 @@ def _validate(s: MorningSettings) -> None:
         raise ValueError("count must be between 1 and 6")
     if not s.topics:
         raise ValueError("topics must not be empty")
+    if not 1 <= s.build_lead_min <= 60:
+        raise ValueError("build_lead_min must be between 1 and 60")
 
 
 def save_morning(conn: sqlite3.Connection, s: MorningSettings) -> None:
     _validate(s)
     conn.execute(
         "UPDATE morning_settings SET enabled = ?, wake_time = ?, days_json = ?,"
-        " topics_json = ?, count = ? WHERE id = 1",
+        " topics_json = ?, count = ?, build_lead_min = ? WHERE id = 1",
         (
             int(s.enabled),
             s.wake_time,
             json.dumps(list(s.days)),
             json.dumps(list(s.topics)),
             s.count,
+            s.build_lead_min,
         ),
     )
     conn.commit()

@@ -45,6 +45,7 @@ class MorningBody(BaseModel):
     days: list[Day] = Field(max_length=7)
     topics: list[Topic] = Field(max_length=20)
     count: int = Field(ge=1, le=6)
+    build_lead_min: int | None = Field(default=None, ge=1, le=60)  # omitted: keep current
 
 
 def quota_day(now: datetime | None = None) -> str:
@@ -108,11 +109,12 @@ def build_router(deps: Deps) -> APIRouter:
 
     @router.put("/morning")
     def put_settings(body: MorningBody):
-        settings = MorningSettings(
-            enabled=body.enabled, wake_time=body.wake_time, days=tuple(body.days),
-            topics=tuple(body.topics), count=body.count,
-        )
         with closing(deps.db_factory()) as conn:
+            lead = body.build_lead_min or get_morning(conn).build_lead_min
+            settings = MorningSettings(
+                enabled=body.enabled, wake_time=body.wake_time, days=tuple(body.days),
+                topics=tuple(body.topics), count=body.count, build_lead_min=lead,
+            )
             try:
                 save_morning(conn, settings)
             except ValueError as exc:
