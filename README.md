@@ -33,6 +33,11 @@ installs the systemd user units and enables lingering. Every run syncs the code
 imports the legacy data once, and restarts the service. A minimal
 `config.local.yaml` (no secrets) is created only if none exists.
 
+The legacy import (old ratings and `data/interest_profile.json`) has already run
+on the Pi, guarded by `data/.legacy-migrated`. `data/interest_profile.json` is
+personal data and no longer tracked in git; a fresh install without it simply
+imports nothing.
+
 ## Finish setup (Jamil)
 
 These steps need a person; the server runs without them but reports
@@ -49,11 +54,17 @@ These steps need a person; the server runs without them but reports
    `~/home-studio/secrets/cookies.txt` on the Pi (`chmod 600`).
 3. **Claude login.** On the Pi, run `claude` once and complete `/login`.
    (If `claude` is missing: `sudo npm i -g @anthropic-ai/claude-code`.)
-4. **Optional:** a YouTube Data API key under `youtube: api_key:` in
-   `config.local.yaml`.
-5. **Tailscale** for reaching the app away from home:
+4. **Import the account once.** After the cookies are in place (and Claude is
+   logged in, so the first taste profile can be seeded), run
+   `cd ~/home-studio && .venv/bin/python -m src import-account`. After that the
+   server re-imports daily at 04:00.
+5. **A YouTube Data API key is strongly recommended** (`youtube: api_key:` in
+   `config.local.yaml`). Without one every search and metadata lookup goes
+   through yt-dlp, paced 2 s apart, which can make the morning build miss its
+   few-minute window.
+6. **Tailscale** for reaching the app away from home:
    `curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up`,
    then note the MagicDNS name and use it in the app.
-6. `systemctl --user restart home-studio`, then
+7. `systemctl --user restart home-studio`, then
    `curl -s localhost:8765/api/status` should show `ok: true`, bluetooth
    `connected` and cookies `ok`.
