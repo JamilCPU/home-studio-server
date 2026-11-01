@@ -9,7 +9,14 @@ from dataclasses import replace
 from src.sources.data_api import DataApi, QuotaExceeded
 from src.sources.ytdlp import SourceAuthError, SourceError, YtDlp
 from src.store.settings import log_event
-from src.store.videos import Video, get_video, set_transcript, upsert_video
+from src.store.videos import (
+    Video,
+    chapters_checked,
+    get_video,
+    mark_chapters_checked,
+    set_transcript,
+    upsert_video,
+)
 from src.transcript import truncate_transcript
 
 logger = logging.getLogger(__name__)
@@ -76,9 +83,13 @@ def ensure_transcript(
 
 
 def ensure_chapters(conn: sqlite3.Connection, video_id: str, ytdlp: YtDlp) -> None:
-    """Fill chapters for a stored video that has none; never raises on source errors."""
+    """Fill chapters for a stored video that has none; never raises on source errors.
+
+    A lookup that finds no chapters is remembered (``chapters_checked``) so later plays
+    do not fetch again; a failed lookup is not, so it is retried next time.
+    """
     video = get_video(conn, video_id)
-    if video is None or video.chapters:
+    if video is None or video.chapters or chapters_checked(conn, video_id):
         return
     try:
         fetched = ytdlp.metadata(video_id)
@@ -92,3 +103,4 @@ def ensure_chapters(conn: sqlite3.Connection, video_id: str, ytdlp: YtDlp) -> No
         return
     if fetched.chapters:
         upsert_video(conn, replace(video, chapters=fetched.chapters))
+    mark_chapters_checked(conn, video_id)

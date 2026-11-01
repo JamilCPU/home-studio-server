@@ -107,6 +107,23 @@ def test_ensure_chapters_fills_empty(db):
     assert get_video(db, "v").chapters == (Chapter("Intro", 0.0),)
 
 
+def test_ensure_chapters_checks_only_once_when_none(db):
+    upsert_video(db, vid("v"))
+    yt = FakeYt(chapters=())
+    catalog.ensure_chapters(db, "v", yt)
+    catalog.ensure_chapters(db, "v", yt)
+    assert yt.meta_calls == ["v"]
+    assert get_video(db, "v").chapters == ()
+
+
+def test_ensure_chapters_retries_after_source_error(db):
+    upsert_video(db, vid("v"))
+    catalog.ensure_chapters(db, "v", FakeYt(fail={"v": SourceError("boom")}))
+    yt = FakeYt(chapters=(Chapter("Intro", 0.0),))
+    catalog.ensure_chapters(db, "v", yt)
+    assert get_video(db, "v").chapters == (Chapter("Intro", 0.0),)
+
+
 def test_ensure_chapters_noop_when_present(db):
     upsert_video(db, vid("v", chapters=(Chapter("X", 1.0),)))
     yt = FakeYt()
