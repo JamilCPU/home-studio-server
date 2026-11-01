@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -184,3 +185,72 @@ def test_submit_taste_refresh_runs_refresh(factory):
     finally:
         worker.stop()
     assert calls == [1]
+
+
+def test_run_request_exception_marks_failed_and_logs_event(factory):
+    conn = factory()
+    rid = create_request(conn, "p", "user", "end")
+
+    def run(c, r):
+        raise RuntimeError("kaboom")
+
+    worker = make_worker(factory, run)
+    worker.start()
+    try:
+        worker.submit(rid)
+        assert worker.join_idle(5)
+    finally:
+        worker.stop()
+    req = get_request(conn, rid)
+    assert (req.status, req.error) == ("failed", "RuntimeError: kaboom")
+    events = [e for e in recent_events(conn) if e["component"] == "agent"]
+    assert events[0]["level"] == "error" and events[0]["message"] == "RuntimeError: kaboom"
+
+
+def test_setup_failure_is_logged_and_worker_continues(factory, monkeypatch):
+    import src.agent.worker as worker_mod
+
+    conn = factory()
+    first = create_request(conn, "p", "user", "end")
+    second = create_request(conn, "q", "user", "end")
+    real = worker_mod.set_status
+    state = {"failed_once": False}
+
+    def flaky(c, rid, status, **kw):
+        if status == "running" and not state["failed_once"]:
+            state["failed_once"] = True
+            raise sqlite3.OperationalError("db locked")
+        return real(c, rid, status, **kw)
+
+    monkeypatch.setattr(worker_mod, "set_status", flaky)
+    seen = []
+    worker = make_worker(factory, lambda c, r: seen.append(r) or [])
+    worker.start()
+    try:
+        worker.submit(first)
+        worker.submit(second)
+        assert worker.join_idle(5)
+    finally:
+        worker.stop()
+    assert seen == [second]
+    req = get_request(conn, first)
+    assert (req.status, req.error) == ("failed", "OperationalError: db locked")
+    events = [e for e in recent_events(conn) if e["component"] == "agent"]
+    assert any(e["message"] == "OperationalError: db locked" for e in events)
+
+
+def test_start_drops_stale_stop_sentinel(factory):
+    from src.agent.worker import _STOP
+
+    conn = factory()
+    rid = create_request(conn, "p", "user", "end")
+    seen = []
+    worker = make_worker(factory, lambda c, r: seen.append(r) or [])
+    worker._queue.put(_STOP)
+    worker.start()
+    try:
+        worker.submit(rid)
+        assert worker.join_idle(5)
+    finally:
+        worker.stop()
+    assert seen == [rid]

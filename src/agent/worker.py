@@ -50,6 +50,7 @@ class AgentWorker:
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
+        self._drain_stale_stop()
         self._reset_stale()
         self._thread = threading.Thread(target=self._loop, name="agent-worker", daemon=True)
         self._thread.start()
@@ -60,6 +61,8 @@ class AgentWorker:
             return
         self._queue.put(_STOP)
         thread.join(timeout=_JOIN_TIMEOUT_S)
+        if thread.is_alive():
+            logger.warning("agent worker did not stop within %ss", _JOIN_TIMEOUT_S)
         self._thread = None
 
     def submit(self, request_id: int) -> None:
@@ -87,6 +90,35 @@ class AgentWorker:
             for row in rows:
                 set_status(conn, row[0], "failed", error="server restarted")
 
+    def _drain_stale_stop(self) -> None:
+        """Drop a _STOP left behind by a stop() whose join timed out; keep real jobs."""
+        keep = []
+        while True:
+            try:
+                job = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self._queue.task_done()
+            if job is not _STOP:
+                keep.append(job)
+        for job in keep:
+            self._queue.put(job)
+
+    def _log_error(self, exc: BaseException) -> None:
+        """Best-effort agent/error status event on its own connection."""
+        try:
+            with closing(self._db_factory()) as conn:
+                log_event(conn, COMPONENT, "error", _describe(exc))
+        except Exception:  # noqa: BLE001
+            logger.exception("could not log agent error event")
+
+    def _fail_request(self, request_id: int, exc: BaseException) -> None:
+        try:
+            with closing(self._db_factory()) as conn:
+                set_status(conn, request_id, "failed", error=_describe(exc))
+        except Exception:  # noqa: BLE001
+            logger.exception("could not mark request %s failed", request_id)
+
     def _loop(self) -> None:
         while True:
             job = self._queue.get()
@@ -94,8 +126,11 @@ class AgentWorker:
                 if job is _STOP:
                     return
                 self._handle(job)
-            except Exception:  # noqa: BLE001 - the worker thread must never die
+            except Exception as exc:  # noqa: BLE001 - the worker thread must never die
                 logger.exception("agent worker job failed")
+                if isinstance(job, int):
+                    self._fail_request(job, exc)
+                self._log_error(exc)
             finally:
                 self._queue.task_done()
 
@@ -114,6 +149,7 @@ class AgentWorker:
         except Exception as exc:  # noqa: BLE001
             logger.exception("agent request %s crashed", request_id)
             set_status(conn, request_id, "failed", error=_describe(exc))
+            self._log_error(exc)
             return
         request = get_request(conn, request_id)
         if ids and request is not None and request.play == "now":
@@ -132,4 +168,4 @@ class AgentWorker:
                 self._refresh_taste(conn)
         except Exception as exc:  # noqa: BLE001
             logger.exception("taste refresh failed")
-            log_event(conn, COMPONENT, "error", _describe(exc))
+            self._log_error(exc)
