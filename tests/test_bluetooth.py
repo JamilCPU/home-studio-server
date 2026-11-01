@@ -202,3 +202,39 @@ def test_monitor_start_stop():
     mon.stop()
     assert not thread.is_alive()
     assert mon._reported == "unconfigured"  # check_once ran at least once
+
+
+class NoHciconfigRun(FakeRun):
+    """hciconfig is not installed (newer BlueZ images drop it)."""
+
+    def __call__(self, cmd, **kwargs):
+        if cmd[0] == "hciconfig":
+            self.calls.append((cmd, kwargs))
+            raise FileNotFoundError("hciconfig")
+        return super().__call__(cmd, **kwargs)
+
+
+def _sysfs(tmp_path, address):
+    (tmp_path / "hci1").mkdir()
+    (tmp_path / "hci1" / "address").write_text(address + "\n")
+    return tmp_path
+
+
+def test_controller_address_falls_back_to_sysfs(tmp_path):
+    popen = FakePopen(OK_LINES)
+    sysfs = _sysfs(tmp_path, CTRL.lower())
+    assert ensure_connected(MAC, "hci1", NoHciconfigRun(), popen, sysfs=sysfs) is True
+    assert "".join(popen.written).startswith(f"select {CTRL}\n")
+
+
+def test_controller_address_none_without_hciconfig_or_sysfs(tmp_path):
+    popen = FakePopen(OK_LINES)
+    assert ensure_connected(MAC, "hci1", NoHciconfigRun(), popen, sysfs=tmp_path) is False
+    assert popen.args is None or popen.written == []
+
+
+def test_monitor_passes_sysfs_through(tmp_path):
+    popen = FakePopen(OK_LINES)
+    sysfs = _sysfs(tmp_path, CTRL)
+    mon = BtMonitor(MAC, "hci1", run=NoHciconfigRun(), popen=popen, sysfs=sysfs)
+    assert mon.check_once() == "connected"

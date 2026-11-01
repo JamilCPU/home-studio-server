@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import closing
+from pathlib import Path
 from typing import Any, Literal
 
 from src.store.settings import log_event
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 COMPONENT = "bluetooth"
 TIMEOUT_S = 15
+SYSFS_BLUETOOTH = Path("/sys/class/bluetooth")
 _BD_ADDRESS = re.compile(r"BD Address:\s*([0-9A-Fa-f:]{17})")
 _CONTROLLER = re.compile(r"^Controller\s+([0-9A-Fa-f:]{17})", re.MULTILINE)
 
@@ -48,13 +50,23 @@ def is_connected(mac: str, run: Callable[..., Any] = subprocess.run) -> bool:
     return out is not None and "Connected: yes" in out
 
 
-def _controller_address(adapter: str, run: Callable[..., Any]) -> str | None:
-    """Resolve an adapter name (hci1) to its controller address."""
-    hci = _run(run, ["hciconfig", adapter])
-    match = _BD_ADDRESS.search(hci or "")
-    if match is None:
+def _sysfs_address(adapter: str, sysfs: Path) -> str | None:
+    try:
+        text = (Path(sysfs) / adapter / "address").read_text(encoding="ascii").strip()
+    except OSError:
         return None
-    address = match.group(1).upper()
+    return text.upper() if _MAC.match(text) else None
+
+
+def _controller_address(
+    adapter: str, run: Callable[..., Any], sysfs: Path = SYSFS_BLUETOOTH
+) -> str | None:
+    """Resolve an adapter name (hci1) to its controller address: hciconfig, else sysfs."""
+    match = _BD_ADDRESS.search(_run(run, ["hciconfig", adapter]) or "")
+    address = match.group(1).upper() if match else _sysfs_address(adapter, sysfs)
+    if address is None:
+        logger.warning("could not resolve adapter %s to a controller address", adapter)
+        return None
     listing = _run(run, ["bluetoothctl", "list"])
     if listing is not None and address not in {m.upper() for m in _CONTROLLER.findall(listing)}:
         logger.warning("adapter %s (%s) not known to bluetoothctl", adapter, address)
@@ -141,9 +153,10 @@ def ensure_connected(
     run: Callable[..., Any] = subprocess.run,
     popen: Callable[..., Any] = subprocess.Popen,
     timeout_s: float = TIMEOUT_S,
+    sysfs: Path = SYSFS_BLUETOOTH,
 ) -> bool:
     _validate_mac(mac)
-    address = _controller_address(adapter, run)
+    address = _controller_address(adapter, run, sysfs)
     if address is None:
         return False
     # `select` only lasts within one bluetoothctl session, and `connect` is asynchronous,
@@ -160,6 +173,7 @@ class BtMonitor:
         db_factory: Callable[[], sqlite3.Connection] | None = None,
         run: Callable[..., Any] = subprocess.run,
         popen: Callable[..., Any] = subprocess.Popen,
+        sysfs: Path = SYSFS_BLUETOOTH,
     ) -> None:
         if mac:
             _validate_mac(mac)
@@ -169,6 +183,7 @@ class BtMonitor:
         self._interval_s = interval_s
         self._db_factory = db_factory
         self._run = run
+        self._sysfs = sysfs
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_state: State = "unconfigured" if not mac else "disconnected"
@@ -191,7 +206,7 @@ class BtMonitor:
         if not self._mac:
             state: State = "unconfigured"
         elif is_connected(self._mac, self._run) or ensure_connected(
-            self._mac, self._adapter, self._run, self._popen
+            self._mac, self._adapter, self._run, self._popen, sysfs=self._sysfs
         ):
             state = "connected"
         else:
