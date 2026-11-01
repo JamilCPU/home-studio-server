@@ -43,3 +43,6 @@ target-version = "py311"
 [tool.black]
 line-length = 100
 target-version = ["py311"]
+
+[tool.setuptools.package-data]
+"src.db" = ["migrations/*.sql"]
