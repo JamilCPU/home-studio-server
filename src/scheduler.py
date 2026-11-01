@@ -49,6 +49,7 @@ class MorningScheduler:
         self._tz = ZoneInfo(tz)
         self._clock = clock
         self._last_thread: threading.Thread | None = None
+        self._build_thread: threading.Thread | None = None
 
     # -- scheduled ticks ----------------------------------------------------------
 
@@ -66,25 +67,42 @@ class MorningScheduler:
             if build_at <= local < build_at + BUILD_WINDOW:
                 actions.extend(self._maybe_build(conn, settings, local.date()))
             if wake <= local < wake + START_WINDOW:
-                actions.extend(self._maybe_start(conn, local.date()))
+                actions.extend(self._maybe_start(conn, settings, local.date()))
             return actions
 
     def _maybe_build(
         self, conn: sqlite3.Connection, settings: MorningSettings, day: date
     ) -> list[str]:
         message = f"built:{day.isoformat()}"
-        if event_logged(conn, message):
+        if event_logged(conn, message) or self._build_running():
             return []
         log_event(conn, COMPONENT, "info", message)
         request_id = create_request(conn, morning_prompt(settings), "morning", "end")
-        return [self._build(conn, request_id, settings)]
+        self._build_thread = threading.Thread(
+            target=self._build_worker, args=(request_id, settings), daemon=True
+        )
+        self._build_thread.start()
+        return ["built"]
 
-    def _maybe_start(self, conn: sqlite3.Connection, day: date) -> list[str]:
+    def _build_running(self) -> bool:
+        threads = (self._build_thread, self._last_thread)
+        return any(t is not None and t.is_alive() for t in threads)
+
+    def _build_worker(self, request_id: int, settings: MorningSettings) -> None:
+        try:
+            with closing(self._db_factory()) as conn:
+                self._build(conn, request_id, settings)
+        except Exception:
+            logger.exception("scheduled morning build failed")
+
+    def _maybe_start(
+        self, conn: sqlite3.Connection, settings: MorningSettings, day: date
+    ) -> list[str]:
         message = f"started:{day.isoformat()}"
         if event_logged(conn, message):
             return []
         log_event(conn, COMPONENT, "info", message)
-        return ["started"] if self._start(conn) else []
+        return ["started"] if self._start(conn, settings) else []
 
     # -- shared steps -------------------------------------------------------------
 
@@ -100,14 +118,28 @@ class MorningScheduler:
             ids = []
         if ids:
             return "built"
-        fallback_morning(conn, settings.count)
+        self._safe_fallback(conn, settings)
         return "fallback"
 
-    def _start(self, conn: sqlite3.Connection) -> bool:
-        """Put morning items first and play if idle; True when playback was started."""
+    @staticmethod
+    def _safe_fallback(conn: sqlite3.Connection, settings: MorningSettings) -> None:
+        try:
+            fallback_morning(conn, settings.count)
+        except Exception:
+            logger.exception("fallback morning failed")
+
+    def _start(self, conn: sqlite3.Connection, settings: MorningSettings) -> bool:
+        """Put morning items first and play if idle; True when playback was started.
+
+        With nothing morning-sourced queued (build crashed or still running), the
+        fallback set is queued first so the morning is never silent.
+        """
         if self._engine.now().state != "idle":
             return False
         queued = queue.upcoming(conn)
+        if not any(i.source in MORNING_SOURCES for i in queued):
+            self._safe_fallback(conn, settings)
+            queued = queue.upcoming(conn)
         morning = [i.id for i in queued if i.source in MORNING_SOURCES]
         if not morning:
             return False
@@ -134,7 +166,7 @@ class MorningScheduler:
         try:
             with closing(self._db_factory()) as conn:
                 self._build(conn, request_id, settings)
-                self._start(conn)
+                self._start(conn, settings)
         except Exception:
             logger.exception("run_now failed")
 
