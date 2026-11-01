@@ -5,13 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/jamil/home-studio
+WorkingDirectory=%h/home-studio
 Environment=XDG_RUNTIME_DIR=/run/user/%U
-ExecStart=/home/jamil/home-studio/.venv/bin/python -m src --config config.yaml serve
+# The venv first: mpv's ytdl hook and the agent's claude CLI are found on PATH.
+Environment=PATH=%h/home-studio/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/home-studio/.venv/bin/python -m src --config config.yaml serve
 Restart=on-failure
 RestartSec=5
 Nice=5
-MemoryMax=512M
+MemoryMax=1G
 
 [Install]
 WantedBy=default.target

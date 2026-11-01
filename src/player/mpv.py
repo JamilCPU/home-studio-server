@@ -6,6 +6,7 @@ import json
 import logging
 import queue
 import subprocess
+import sys
 import threading
 import time
 from itertools import count
@@ -44,6 +45,33 @@ class Mpv(Protocol):
     def wait_event(self, timeout: float) -> dict | None: ...
 
 
+def venv_ytdlp(python: Path | str = sys.executable) -> Path | None:
+    """The yt-dlp script installed next to ``python`` (the venv's), or None."""
+    candidate = Path(python).parent / "yt-dlp"
+    return candidate if candidate.exists() else None
+
+
+def mpv_argv(
+    socket_path: Path,
+    cookies_path: Path,
+    mpv_bin: str = "mpv",
+    ytdlp_path: Path | None = None,
+) -> list[str]:
+    """mpv's command line; ``ytdlp_path`` pins the ytdl hook to that yt-dlp (not PATH's)."""
+    argv = [
+        mpv_bin,
+        "--idle=yes",
+        "--no-video",
+        "--no-terminal",
+        f"--input-ipc-server={socket_path}",
+        "--ytdl-format=bestaudio",
+        f"--ytdl-raw-options=cookies={cookies_path}",
+    ]
+    if ytdlp_path is not None:
+        argv.append(f"--script-opts=ytdl_hook-ytdl_path={ytdlp_path}")
+    return argv
+
+
 class MpvIpc:
     """Runs `mpv --idle` and talks newline-delimited JSON over its Unix socket."""
 
@@ -57,15 +85,7 @@ class MpvIpc:
         self._closed = False
         self._socket_path.unlink(missing_ok=True)
         self._proc = subprocess.Popen(
-            [
-                mpv_bin,
-                "--idle=yes",
-                "--no-video",
-                "--no-terminal",
-                f"--input-ipc-server={self._socket_path}",
-                "--ytdl-format=bestaudio",
-                f"--ytdl-raw-options=cookies={cookies_path}",
-            ]
+            mpv_argv(self._socket_path, cookies_path, mpv_bin, venv_ytdlp())
         )
         self._sock = self._connect()
         threading.Thread(target=self._read_loop, daemon=True, name="mpv-ipc-reader").start()

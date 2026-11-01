@@ -3,5 +3,5 @@ Description=Update yt-dlp in the Home Studio venv
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/jamil/home-studio
-ExecStart=/home/jamil/home-studio/scripts/update-ytdlp.sh
+WorkingDirectory=%h/home-studio
+ExecStart=%h/home-studio/scripts/update-ytdlp.sh
