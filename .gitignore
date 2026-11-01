@@ -32,3 +32,4 @@ Thumbs.db
 # Virtual env
 venv/
 .venv/
+data/interest_profile.json
