@@ -22,8 +22,14 @@ logger = logging.getLogger(__name__)
 COMPONENT = "agent"
 MAX_QUERIES = 4
 MAX_COUNT = 12
-MAX_SHORTLIST = 8
+MIN_SHORTLIST = 8
 MAX_CANDIDATES = 40
+MAX_IMPORT_CANDIDATES = 20
+IMPORT_CANDIDATE_KINDS = ("liked", "playlist", "recommended")  # playlist = watch later
+MIN_DURATION_S = 180  # shorter, live/upcoming (0) and unknown lengths are dropped
+SHORT_WORDS = ("short", "clip")
+EXCLUDE_PLAYED_DAYS = 30
+EVER_DAYS = 36500
 MAX_REASON_CHARS = 140
 MAX_EVENT_CHARS = 300
 TRANSCRIPT_CHARS = 3000
@@ -55,11 +61,14 @@ Reply with JSON only, no prose and no code fences. Schema:
 {"shortlist": ["<video_id>", ...]}
 
 Rules:
-- Choose at most 8 video ids, only from the candidates below.
+- Choose at most $cap video ids, only from the candidates below; choose at least $count
+  where possible.
 - Prefer videos that match the request and the listener's taste.
 
 Request:
 $request
+
+$taste
 
 Candidates (video_id | title | channel | duration m:ss | published):
 $candidates
@@ -118,18 +127,28 @@ def _str_list(value: Any, key: str, step: str) -> list[str]:
     return value
 
 
+def _whole_number(value: Any, key: str, *, nullable: bool = False) -> int | None:
+    """An int, or a float rounded to one (2.0 -> 2, 2.6 -> 3); bools are rejected."""
+    if value is None and nullable:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        kind = "an integer or null" if nullable else "an integer"
+        raise ClaudeBadOutput(f"plan: '{key}' must be {kind}")
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ClaudeBadOutput(f"plan: '{key}' must be a finite number")
+        return int(value) if value.is_integer() else round(value)
+    return value
+
+
 def _parse_plan(data: dict[str, Any]) -> tuple[list[str], int, int | None]:
     raw = _str_list(data.get("queries"), "queries", "plan")
     queries = [q.strip() for q in raw if q.strip()]
     if not queries:
         raise ClaudeBadOutput("plan: 'queries' must not be empty")
-    count = data.get("count")
-    if isinstance(count, bool) or not isinstance(count, int):
-        raise ClaudeBadOutput("plan: 'count' must be an integer")
-    target = data.get("target_minutes")
-    if isinstance(target, bool) or not (target is None or isinstance(target, int)):
-        raise ClaudeBadOutput("plan: 'target_minutes' must be an integer or null")
-    return queries[:MAX_QUERIES], max(1, min(MAX_COUNT, count)), target
+    count = _whole_number(data.get("count"), "count")
+    target = _whole_number(data.get("target_minutes"), "target_minutes", nullable=True)
+    return queries[:MAX_QUERIES], max(1, min(MAX_COUNT, count or 0)), target
 
 
 def _parse_picks(data: dict[str, Any]) -> list[tuple[str, str]]:
@@ -160,28 +179,63 @@ def _search(query: str, data_api, ytdlp) -> list[str]:
     return ytdlp.search(query, 20)
 
 
-def _candidates(conn: sqlite3.Connection, queries: list[str], data_api, ytdlp) -> list[Video]:
-    ids: list[str] = []
+def _active_ids(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        "SELECT video_id FROM queue_items WHERE status IN ('queued','playing')"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _import_ids(conn: sqlite3.Connection, excluded: set[str]) -> list[str]:
+    """Up to 20 stored, unplayed liked / watch-later / recommended videos (no fetch, no quota)."""
+    marks = ",".join("?" for _ in IMPORT_CANDIDATE_KINDS)
+    rows = conn.execute(
+        f"SELECT a.video_id FROM account_imports a JOIN videos v ON v.video_id = a.video_id"
+        f" WHERE a.kind IN ({marks}) ORDER BY a.id",
+        IMPORT_CANDIDATE_KINDS,
+    ).fetchall()
+    skip = excluded | played_video_ids(conn, EVER_DAYS)
+    fresh = [i for i in dict.fromkeys(r[0] for r in rows) if i not in skip]
+    return fresh[:MAX_IMPORT_CANDIDATES]
+
+
+def _long_enough(video: Video, allow_short: bool) -> bool:
+    return allow_short or (video.duration_s or 0) >= MIN_DURATION_S
+
+
+def _candidates(
+    conn: sqlite3.Connection, request_text: str, queries: list[str], data_api, ytdlp
+) -> list[Video]:
+    """Account-import candidates first, then search results; drops played-recently,
+    disliked, queued/playing and (unless asked for) short, live or unknown-length videos."""
+    excluded = (
+        played_video_ids(conn, EXCLUDE_PLAYED_DAYS) | disliked_video_ids(conn) | _active_ids(conn)
+    )
+    ids = _import_ids(conn, excluded)
     for query in queries:
         ids.extend(_search(query, data_api, ytdlp))
-    excluded = played_video_ids(conn, 30) | disliked_video_ids(conn)
     fresh = [i for i in dict.fromkeys(ids) if i not in excluded]
-    return ensure_videos(conn, fresh[:MAX_CANDIDATES], data_api, ytdlp)[:MAX_CANDIDATES]
+    allow_short = any(word in request_text.lower() for word in SHORT_WORDS)
+    videos = ensure_videos(conn, fresh[:MAX_CANDIDATES], data_api, ytdlp)
+    return [v for v in videos if _long_enough(v, allow_short)][:MAX_CANDIDATES]
 
 
 def _shortlist_block(conn: sqlite3.Connection, videos: list[Video], ytdlp) -> tuple[str, bool]:
-    """Metadata plus transcript per video; returns (text, saw_auth_error)."""
+    """Metadata plus transcript per video; returns (text, saw_auth_error).
+
+    After the first SourceAuthError no more transcripts are fetched (the cookies are
+    the problem, so every later call would fail too)."""
     blocks = []
     auth_failed = False
     for video in videos:
-        try:
-            text = ensure_transcript(conn, video.video_id, ytdlp, TRANSCRIPT_CHARS)
-        except SourceAuthError:
-            auth_failed = True
-            text = None
-        except SourceError as exc:
-            logger.warning("transcript unavailable for %s: %s", video.video_id, exc)
-            text = None
+        text = None
+        if not auth_failed:
+            try:
+                text = ensure_transcript(conn, video.video_id, ytdlp, TRANSCRIPT_CHARS)
+            except SourceAuthError:
+                auth_failed = True
+            except SourceError as exc:
+                logger.warning("transcript unavailable for %s: %s", video.video_id, exc)
         blocks.append(f"{_meta_line(video)}\nTranscript: {text or '(no transcript)'}")
     return "\n\n".join(blocks), auth_failed
 
@@ -193,13 +247,16 @@ def _choose(
     plan = _ask_json(claude, PLAN_PROMPT.substitute(request=request.prompt, taste=taste), "plan")
     queries, count, target = _parse_plan(plan)
 
-    candidates = _candidates(conn, queries, data_api, ytdlp)
+    candidates = _candidates(conn, request.prompt, queries, data_api, ytdlp)
     if not candidates:
         raise NoPicks(NO_PICKS_MESSAGE)
+    cap = min(MAX_COUNT, max(MIN_SHORTLIST, count))
     lines = "\n".join(_meta_line(v) for v in candidates)
-    prompt = SHORTLIST_PROMPT.substitute(request=request.prompt, candidates=lines)
+    prompt = SHORTLIST_PROMPT.substitute(
+        request=request.prompt, candidates=lines, taste=taste, cap=cap, count=count
+    )
     data = _ask_json(claude, prompt, "shortlist")
-    wanted = set(_str_list(data.get("shortlist"), "shortlist", "shortlist")[:MAX_SHORTLIST])
+    wanted = set(_str_list(data.get("shortlist"), "shortlist", "shortlist")[:cap])
     shortlisted = [v for v in candidates if v.video_id in wanted]
     if not shortlisted:
         raise NoPicks(NO_PICKS_MESSAGE)
