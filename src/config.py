@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from src.models import AppConfig
+from src.models import DEFAULT_CLAUDE_ARGS, AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,12 @@ def _resolve(base_dir: Path, value: str) -> str:
     """A relative path from the YAML is relative to the config file's directory."""
     candidate = Path(value)
     return str(candidate if candidate.is_absolute() else base_dir / candidate)
+
+
+def _claude_args(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or not all(isinstance(a, str) for a in value):
+        raise ValueError("agent.claude_args must be a list of strings")
+    return tuple(value)
 
 
 def load_config(path: Path = Path("config.yaml")) -> AppConfig:
@@ -140,5 +146,6 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         output_device_label=bluetooth.get("label", "Echo"),
         timezone=general.get("timezone", "America/Chicago"),
         claude_timeout_s=int(agent.get("timeout_s", 300)),
+        claude_args=_claude_args(agent.get("claude_args", DEFAULT_CLAUDE_ARGS)),
         quota_ceiling=int(youtube.get("quota_ceiling", 9500)),
     )
