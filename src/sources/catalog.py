@@ -22,8 +22,8 @@ def ensure_videos(
 ) -> list[Video]:
     """Return Videos for `ids` in input order, fetching only those not yet stored.
 
-    Without a Data API (no key) or once its quota is spent, yt-dlp fetches the
-    metadata. Ids that cannot be fetched are skipped. SourceAuthError propagates.
+    Without a Data API (no key), once its quota is spent, or when it fails for any
+    other reason, yt-dlp fetches the metadata. Ids that cannot be fetched are skipped. SourceAuthError propagates.
     """
     unique = list(dict.fromkeys(ids))
     missing = [i for i in unique if get_video(conn, i) is None]
@@ -36,6 +36,11 @@ def ensure_videos(
                 fetched = data_api.video_details(missing)
             except QuotaExceeded:
                 logger.warning("Data API quota exhausted; using yt-dlp for %d ids", len(missing))
+                _ytdlp_metadata(conn, missing, ytdlp)
+            except SourceAuthError:
+                raise
+            except Exception:  # noqa: BLE001 - bad key, network: any Data API failure
+                logger.exception("Data API video_details failed; using yt-dlp")
                 _ytdlp_metadata(conn, missing, ytdlp)
         for video in fetched:
             upsert_video(conn, video)

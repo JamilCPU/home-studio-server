@@ -78,11 +78,13 @@ def picks(*pairs):
     return json.dumps({"picks": [{"video_id": v, "reason": r} for v, r in pairs]})
 
 
-def run(db, claude, api=None, yt=None, play="end", prompt="learn ROS 2"):
+_DEFAULT = object()
+
+
+def run(db, claude, api=_DEFAULT, yt=None, play="end", prompt="learn ROS 2"):
     rid = create_request(db, prompt, "user", play)
-    ids = run_request(
-        db, rid, claude=claude, data_api=api or FakeApi(["a", "b", "c"]), ytdlp=yt or FakeYt()
-    )
+    data_api = FakeApi(["a", "b", "c"]) if api is _DEFAULT else api
+    ids = run_request(db, rid, claude=claude, data_api=data_api, ytdlp=yt or FakeYt())
     return rid, ids
 
 
@@ -237,12 +239,25 @@ def test_search_auth_error_marks_failed_and_logs_ytdlp(db):
     assert ("ytdlp", "SourceAuthError: cookies or sign-in check") in components
 
 
+def test_data_api_search_error_falls_back_to_ytdlp(db):
+    class BadKey(FakeApi):
+        def search(self, query, max_results=25):
+            raise RuntimeError("HttpError 400: API key not valid")
+
+    yt = FakeYt(["a"])
+    claude = FakeClaude([plan(), shortlist("a"), picks(("a", "r"))])
+    rid, ids = run(db, claude, api=BadKey(), yt=yt)
+    assert yt.searched == ["ros 2"]
+    assert len(ids) == 1
+    assert get_request(db, rid).status == "done"
+
+
 def test_unexpected_exception_marks_failed_without_raising(db):
     class Boom:
         def search(self, q, n=25):
             raise RuntimeError("boom")
 
-    rid, ids = run(db, FakeClaude([plan()]), api=Boom())
+    rid, ids = run(db, FakeClaude([plan()]), api=None, yt=Boom())
     assert ids == []
     req = get_request(db, rid)
     assert req.status == "failed" and "boom" in req.error

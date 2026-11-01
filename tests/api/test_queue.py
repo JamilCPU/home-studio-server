@@ -205,6 +205,16 @@ def test_search_data_api_error_falls_back_to_ytdlp(api):
     assert api.ytdlp.searches == ["x"]
 
 
+def test_search_bad_key_uncached_video_comes_from_ytdlp(api):
+    api.catalog.add(make_video("aaaaaaaaaaa"))  # known to the sources, not cached in the DB
+    api.data_api.search_exc = RuntimeError("HttpError 400: API key not valid")
+    api.data_api.details_exc = RuntimeError("HttpError 400: API key not valid")
+    api.ytdlp.search_results = ["aaaaaaaaaaa"]
+    resp = api.client.get("/api/search", params={"q": "x"})
+    assert resp.status_code == 200
+    assert [r["video_id"] for r in resp.json()["data"]["results"]] == ["aaaaaaaaaaa"]
+
+
 def test_search_both_sources_fail_502(api):
     api.data_api.search_exc = RuntimeError("HttpError 500")
     api.ytdlp.search_exc = SourceError("network down")

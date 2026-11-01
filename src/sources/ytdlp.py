@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -98,6 +99,7 @@ class YtDlp:
         self._sleep = sleep
         self._clock = clock
         self._last_call: float | None = None
+        self._pace_lock = threading.Lock()  # one YtDlp is shared by several threads
 
     # -- public API ---------------------------------------------------------------
 
@@ -185,6 +187,11 @@ class YtDlp:
         return info or {}
 
     def _pace(self) -> None:
+        """Keep calls at least min_interval_s apart, across threads (not the call itself)."""
+        with self._pace_lock:
+            self._wait_and_stamp()
+
+    def _wait_and_stamp(self) -> None:
         if self._last_call is not None:
             wait = self._min_interval_s - (self._clock() - self._last_call)
             if wait > 0:
