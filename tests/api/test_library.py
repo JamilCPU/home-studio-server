@@ -114,7 +114,7 @@ def test_history_since_query(api):
     resp = api.client.get("/api/history", params={"since": "2026-11-01T00:00:00Z"})
     assert resp.status_code == 200
     assert [e["video"]["video_id"] for e in resp.json()["data"]["entries"]] == ["bbbbbbbbbbb"]
-    offset = api.client.get("/api/history", params={"since": "2026-11-01T02:00:00+02:00"})
+    offset = api.client.get("/api/history", params={"since": "2026-11-01T13:00:00+02:00"})
     assert [e["play_id"] for e in offset.json()["data"]["entries"]] == [new]
     naive = api.client.get("/api/history", params={"since": "2026-11-01T13:00:00"})
     assert naive.json()["data"]["entries"] == []
@@ -126,6 +126,14 @@ def test_history_bad_since_422(api):
     body = resp.json()
     assert body["ok"] is False
     assert "since" in body["error"]
+
+
+@pytest.mark.parametrize("since", ["0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"])
+def test_history_since_out_of_range_422(api, since):
+    resp = api.client.get("/api/history", params={"since": since})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "since: must be an ISO 8601 timestamp"
+    assert api.client.get("/api/ratings", params={"since": since}).status_code == 422
 
 
 def test_get_ratings_shape(api):
@@ -161,6 +169,9 @@ def test_get_ratings_since_and_limit(api):
     assert [r["id"] for r in got] == [ids[2], ids[1]]
     one = api.client.get("/api/ratings", params={**since, "limit": 1}).json()["data"]["ratings"]
     assert [r["id"] for r in one] == [ids[2]]
+    offset = {"since": "2026-11-01T11:30:00+02:00"}  # 09:30Z: an ignored offset would drop ids[1]
+    got = api.client.get("/api/ratings", params=offset).json()["data"]["ratings"]
+    assert [r["id"] for r in got] == [ids[2], ids[1]]
     assert api.client.get("/api/ratings", params={"since": "nope"}).status_code == 422
 
 
