@@ -19,9 +19,10 @@ from typing import Any
 
 from src.agent.claude_cli import ClaudeError, make_runner
 from src.agent.request import AUTH_EVENT_MESSAGE, run_request
-from src.agent.taste import refresh_taste, seed_taste_from_imports
+from src.agent.taste import refresh_taste, refresh_taste_from_imports, seed_taste_from_imports
 from src.agent.worker import AgentWorker
 from src.api.app import Deps, create_app
+from src.api.routes_system import cookies_status
 from src.bluetooth import BtMonitor
 from src.config import load_config
 from src.db import connect, migrate
@@ -32,7 +33,9 @@ from src.player.mpv import MpvIpc
 from src.player.supervisor import MpvSupervisor, close_mpv
 from src.scheduler import MorningScheduler
 from src.sources import catalog
-from src.sources.data_api import DataApi
+from src.sources.account_api import AccountApi
+from src.sources.data_api import DataApi, QuotaMeter
+from src.sources.youtube_oauth import YouTubeOAuth
 from src.sources.ytdlp import FeedItem, SourceAuthError, SourceError, YtDlp
 from src.store.settings import imported, log_event, record_import
 from src.store.videos import get_video
@@ -49,6 +52,9 @@ IMPORT_KIND = {
     "watch_later": "playlist",
 }
 IMPORT_COMPONENT = "import"
+# With a connected YouTube account, only these still come from cookies (yt-dlp)
+COOKIE_FEEDS = ("history", "recommended", "watch_later")
+OAUTH_OK_PREFIX = "ok (oauth):"
 FEED_LIMIT = 200
 MAX_IMPORT_VIDEOS = 300
 JOIN_TIMEOUT_S = 5.0
@@ -77,6 +83,22 @@ def _default_bt(config: AppConfig, db_factory: Callable[[], sqlite3.Connection])
     return BtMonitor(config.bt_speaker_mac, config.bt_adapter, db_factory=db_factory)
 
 
+def _default_oauth(
+    config: AppConfig,
+    db_factory: Callable[[], sqlite3.Connection],
+    meter: QuotaMeter,
+    on_connected: Callable[[], None] | None,
+) -> Any:
+    return YouTubeOAuth(
+        config.youtube_oauth_client_id,
+        config.youtube_oauth_client_secret,
+        config.youtube_oauth_token_path,
+        db_factory=db_factory,
+        meter=meter,
+        on_connected=on_connected,
+    )
+
+
 @dataclass(frozen=True)
 class ServiceFactories:
     """How each external-facing component is built; tests swap in fakes."""
@@ -86,6 +108,7 @@ class ServiceFactories:
     data_api: Callable[[AppConfig, Callable[[], sqlite3.Connection]], Any] = _default_data_api
     claude: Callable[[AppConfig], Any] = _default_claude
     bt: Callable[[AppConfig, Callable[[], sqlite3.Connection]], Any] = _default_bt
+    oauth: Callable[..., Any] = _default_oauth
 
 
 @dataclass(frozen=True)
@@ -127,6 +150,12 @@ def _sources(config: AppConfig, factories: ServiceFactories, db_factory) -> tupl
     return data_api, factories.ytdlp(config)
 
 
+def _oauth(config, factories, db_factory, data_api, on_connected=None) -> Any:
+    """YouTubeOAuth sharing the Data API's quota meter (one ceiling, one execute lock)."""
+    meter = getattr(data_api, "meter", None) or QuotaMeter(db_factory, config.quota_ceiling)
+    return factories.oauth(config, db_factory, meter, on_connected)
+
+
 def build_runtime(config: AppConfig, factories: ServiceFactories | None = None) -> Runtime:
     factories = factories or ServiceFactories()
     db_factory = _db_factory(config)
@@ -149,11 +178,19 @@ def _wire(config, factories, db_factory, data_api, ytdlp, claude, mpv) -> Runtim
         db_factory, run_fn, engine, lambda conn: refresh_taste(conn, claude=claude)
     )
     monitor = factories.bt(config, db_factory)
+    import_lock = threading.Lock()  # the 04:00 run and a post-sign-in run never overlap
+    oauth_box: list[Any] = []
 
     def daily_import() -> None:
-        with closing(db_factory()) as conn:
-            counts = import_account(conn, ytdlp=ytdlp, data_api=data_api, claude=claude)
-        logger.info("daily account import: %s", counts)
+        with import_lock, closing(db_factory()) as conn:
+            counts = import_account(
+                conn, ytdlp=ytdlp, data_api=data_api, claude=claude,
+                account=AccountApi(oauth_box[0]), cookies_path=config.cookies_path,
+            )
+        logger.info("account import: %s", counts)
+
+    # after a sign-in (on the poller thread), import right away
+    oauth_box.append(_oauth(config, factories, db_factory, data_api, on_connected=daily_import))
 
     scheduler = MorningScheduler(
         db_factory,
@@ -171,6 +208,7 @@ def _wire(config, factories, db_factory, data_api, ytdlp, claude, mpv) -> Runtim
         bt=monitor,
         scheduler_run_now=scheduler.run_now,
         config=config,
+        youtube_oauth=oauth_box[0],
     )
     return Runtime(deps, engine, supervisor, worker, monitor, scheduler)
 
@@ -219,24 +257,115 @@ def _seed(conn: sqlite3.Connection, claude: Any) -> int:
         return 0
 
 
-def import_account(conn: sqlite3.Connection, *, ytdlp: Any, data_api: Any, claude: Any) -> dict:
+def import_account(
+    conn: sqlite3.Connection,
+    *,
+    ytdlp: Any,
+    data_api: Any,
+    claude: Any,
+    account: Any = None,
+    cookies_path: str | None = None,
+) -> dict:
     """Pull the account's channels and feeds into ``account_imports``; returns counts.
 
-    Then fetches metadata for up to 300 imported videos not yet stored (yt-dlp paces
-    its own calls) and seeds the taste profile if there is none. The outcome is an
-    "import" status event; SourceAuthError is also logged for ytdlp, and a success logs a
-    ytdlp "ok" (clearing ``cookies: "expired"``). Errors re-raise.
+    With a connected YouTube account (``account``, an AccountApi) subscriptions, likes and
+    playlists come from the Data API, and history / recommendations / Watch Later from
+    cookies only when the cookies status is "ok". Otherwise everything comes from cookies
+    (yt-dlp) as before. Then fetches metadata for up to 300 imported videos not yet stored
+    and seeds the taste profile (refreshes it after the first OAuth import). The outcome
+    is an "import" status event; SourceAuthError is also logged for ytdlp, and a cookie
+    success logs a ytdlp "ok" (clearing ``cookies: "expired"``). Errors re-raise.
     """
+    oauth = account is not None and account.connected()
     try:
-        counts = _import(conn, ytdlp, data_api, claude)
+        if oauth:
+            counts, cookies_ran = _import_oauth(
+                conn, account, ytdlp, data_api, claude, cookies_path
+            )
+        else:
+            counts, cookies_ran = _import(conn, ytdlp, data_api, claude), True
     except Exception as exc:
         if isinstance(exc, SourceAuthError):
             log_event(conn, "ytdlp", "error", AUTH_EVENT_MESSAGE)
         log_event(conn, IMPORT_COMPONENT, "error", f"{type(exc).__name__}: {exc}"[:300])
         raise
-    log_event(conn, IMPORT_COMPONENT, "info", f"ok: {counts['videos']} new videos")
-    log_event(conn, "ytdlp", "info", "ok: account import")  # signed-in feeds worked again
+    log_event(conn, IMPORT_COMPONENT, "info", _ok_message(counts, oauth))
+    if cookies_ran:
+        log_event(conn, "ytdlp", "info", "ok: account import")  # signed-in feeds worked again
     return counts
+
+
+def _ok_message(counts: dict, oauth: bool) -> str:
+    if not oauth:
+        return f"ok: {counts['videos']} new videos"
+    feeds = ", ".join(f"{counts[f]} {f}" for f in COOKIE_FEEDS)
+    return (
+        f"{OAUTH_OK_PREFIX} {counts['channels']} channels, {counts['liked']} liked, "
+        f"{counts['playlists']} playlist videos, {feeds}, {counts['videos']} new videos"
+    )
+
+
+def _had_oauth_import(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM status_events WHERE component = ? AND message LIKE ? LIMIT 1",
+        (IMPORT_COMPONENT, OAUTH_OK_PREFIX + "%"),
+    ).fetchone()
+    return row is not None
+
+
+def _cookie_feeds(
+    conn: sqlite3.Connection, ytdlp: Any, cookies_path: str | None
+) -> tuple[dict[str, list[FeedItem]], bool]:
+    """(feed -> items, ran ok). Skipped quietly with an info event unless cookies are ok."""
+    status = cookies_status(conn, cookies_path) if cookies_path else "missing"
+    if status != "ok":
+        log_event(conn, IMPORT_COMPONENT, "info", f"cookie feeds skipped: cookies {status}")
+        return {}, False
+    feeds: dict[str, list[FeedItem]] = {}
+    for feed in COOKIE_FEEDS:
+        try:
+            feeds[feed] = _fetch_feed(ytdlp, feed)
+        except SourceAuthError as exc:  # cookies are optional with OAuth: keep going
+            logger.warning("cookie feeds skipped: %s", exc)
+            log_event(conn, "ytdlp", "error", AUTH_EVENT_MESSAGE)
+            return feeds, False
+    return feeds, True
+
+
+def _import_oauth(conn, account, ytdlp, data_api, claude, cookies_path) -> tuple[dict, bool]:
+    first = not _had_oauth_import(conn)
+    channels = account.subscriptions()
+    _record_new(conn, "subscription", channels)
+    liked = account.liked()
+    _record_new(conn, "liked", liked)
+    playlist = account.playlist_items()
+    _record_new(conn, "playlist", playlist)
+    counts: dict[str, int] = {
+        "channels": len(channels), "liked": len(liked), "playlists": len(playlist),
+    }
+    video_ids = [i.video_id for i in (*liked, *playlist) if i.video_id]
+    feeds, cookies_ran = _cookie_feeds(conn, ytdlp, cookies_path)
+    for feed in COOKIE_FEEDS:
+        items = feeds.get(feed, [])
+        _record_new(conn, IMPORT_KIND[feed], items)
+        counts[feed] = len(items)
+        video_ids.extend(i.video_id for i in items if i.video_id)
+    counts["videos"] = _store_new_videos(conn, video_ids, data_api, ytdlp)
+    counts["taste_seeded"] = _refresh(conn, claude) if first else _seed(conn, claude)
+    return counts, cookies_ran
+
+
+def _refresh(conn: sqlite3.Connection, claude: Any) -> int:
+    try:
+        return int(refresh_taste_from_imports(conn, claude=claude) is not None)
+    except ClaudeError as exc:
+        logger.warning("could not refresh the taste profile from the import: %s", exc)
+        return 0
+
+
+def _store_new_videos(conn: sqlite3.Connection, video_ids: list[str], data_api, ytdlp) -> int:
+    new_ids = [i for i in dict.fromkeys(video_ids) if get_video(conn, i) is None]
+    return len(catalog.ensure_videos(conn, new_ids[:MAX_IMPORT_VIDEOS], data_api, ytdlp))
 
 
 def _import(conn: sqlite3.Connection, ytdlp: Any, data_api: Any, claude: Any) -> dict:
@@ -249,9 +378,7 @@ def _import(conn: sqlite3.Connection, ytdlp: Any, data_api: Any, claude: Any) ->
         _record_new(conn, IMPORT_KIND[feed], items)
         counts[feed] = len(items)
         video_ids.extend(i.video_id for i in items if i.video_id)
-    new_ids = [i for i in dict.fromkeys(video_ids) if get_video(conn, i) is None]
-    wanted = new_ids[:MAX_IMPORT_VIDEOS]
-    counts["videos"] = len(catalog.ensure_videos(conn, wanted, data_api, ytdlp))
+    counts["videos"] = _store_new_videos(conn, video_ids, data_api, ytdlp)
     counts["taste_seeded"] = _seed(conn, claude)
     return counts
 
@@ -319,10 +446,12 @@ def _cmd_import_account(config: AppConfig, factories: ServiceFactories | None = 
     factories = factories or ServiceFactories()
     db_factory = _db_factory(config)
     data_api, ytdlp = _sources(config, factories, db_factory)
+    account = AccountApi(_oauth(config, factories, db_factory, data_api))
     with closing(db_factory()) as conn:
         try:
             counts = import_account(
-                conn, ytdlp=ytdlp, data_api=data_api, claude=factories.claude(config)
+                conn, ytdlp=ytdlp, data_api=data_api, claude=factories.claude(config),
+                account=account, cookies_path=config.cookies_path,
             )
         except SourceAuthError as exc:
             print(f"YouTube sign-in required (cookies expired?): {exc}", file=sys.stderr)
