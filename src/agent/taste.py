@@ -157,6 +157,37 @@ def _legacy_block(taste: TasteProfile | None) -> str:
     )
 
 
+def _current_block(taste: TasteProfile | None) -> str:
+    if taste is None:
+        return ""
+    if taste.source == "legacy":
+        return _legacy_block(taste)
+    return (
+        "\nThe listener's current profile (keep what the account data still supports):\n"
+        f"{taste.summary}\n"
+        f"Likes: {'; '.join(taste.likes) or '-'}\n"
+        f"Dislikes: {'; '.join(taste.dislikes) or '-'}\n"
+    )
+
+
+def _import_lines(conn: sqlite3.Connection) -> str:
+    rows = _balanced([imported(conn, kind) for kind in IMPORT_KINDS], MAX_SEED_LINES)
+    return "\n".join(f"{r['kind']} | {r['title'] or ''} | {r['channel_id'] or ''}" for r in rows)
+
+
+def refresh_taste_from_imports(
+    conn: sqlite3.Connection, *, claude: ClaudeRunner
+) -> TasteProfile | None:
+    """Rebuild the profile from account imports even when one exists (it is passed along as
+    context). Used after the first OAuth import; returns None when nothing was imported."""
+    lines = _import_lines(conn)
+    if not lines:
+        return None
+    prompt = SEED_PROMPT.substitute(lines=lines, legacy=_current_block(latest_taste(conn)))
+    summary, likes, dislikes = _parse_taste(claude(prompt))
+    return _saved(conn, summary, likes, dislikes, "agent")
+
+
 def seed_taste_from_imports(conn: sqlite3.Connection, *, claude: ClaudeRunner) -> TasteProfile | None:
     """Build a first profile from account imports (at most 200 lines, balanced across kinds).
 
@@ -165,10 +196,9 @@ def seed_taste_from_imports(conn: sqlite3.Connection, *, claude: ClaudeRunner) -
     """
     if not _only_legacy_profiles(conn):
         return None
-    rows = _balanced([imported(conn, kind) for kind in IMPORT_KINDS], MAX_SEED_LINES)
-    if not rows:
+    lines = _import_lines(conn)
+    if not lines:
         return None
-    lines = "\n".join(f"{r['kind']} | {r['title'] or ''} | {r['channel_id'] or ''}" for r in rows)
     prompt = SEED_PROMPT.substitute(lines=lines, legacy=_legacy_block(latest_taste(conn)))
     summary, likes, dislikes = _parse_taste(claude(prompt))
     return _saved(conn, summary, likes, dislikes, "agent")

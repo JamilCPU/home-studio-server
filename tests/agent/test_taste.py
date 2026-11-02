@@ -7,7 +7,13 @@ import json
 import pytest
 
 from src.agent.claude_cli import ClaudeBadOutput
-from src.agent.taste import refresh_taste, remove_trait, seed_taste_from_imports, should_refresh
+from src.agent.taste import (
+    refresh_taste,
+    refresh_taste_from_imports,
+    remove_trait,
+    seed_taste_from_imports,
+    should_refresh,
+)
 from src.store.agent import (
     add_correction,
     latest_taste,
@@ -183,3 +189,27 @@ def test_seed_lines_balanced_across_kinds(db):
     assert prompt.count("liked | L") == 30  # a small kind is kept whole
     assert prompt.count("subscription | S") == 85  # the big ones share the rest
     assert prompt.count("history | H") == 85
+
+
+def test_refresh_from_imports_updates_an_existing_profile(db):
+    save_taste(db, "Current agent summary", ["chips"], ["drama"], "agent")
+    record_import(db, "liked", video_id="v1", title="A liked video")
+    claude = FakeClaude([_reply(summary="Now with account data")])
+    taste = refresh_taste_from_imports(db, claude=claude)
+    assert taste is not None and taste.summary == "Now with account data"
+    assert taste.source == "agent"
+    prompt = claude.prompts[0]
+    assert "liked | A liked video | " in prompt
+    assert "Current agent summary" in prompt and "chips" in prompt
+
+
+def test_refresh_from_imports_seeds_without_a_profile(db):
+    record_import(db, "liked", video_id="v1", title="t")
+    claude = FakeClaude([_reply()])
+    assert refresh_taste_from_imports(db, claude=claude) is not None
+    assert "current profile" not in claude.prompts[0].lower()
+
+
+def test_refresh_from_imports_needs_imports(db):
+    save_taste(db, "s", [], [], "agent")
+    assert refresh_taste_from_imports(db, claude=FakeClaude([])) is None
