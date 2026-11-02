@@ -17,6 +17,7 @@ from yt_dlp.version import __version__ as YTDLP_VERSION
 
 from src.api.app import Deps, ok
 from src.api.models import morning_out
+from src.api.routes_youtube import youtube_account_state
 from src.scheduler import last_outcome, next_build_at
 from src.player.engine import OK_MESSAGE
 from src.player.mpv import MpvCommandError, MpvDied
@@ -207,6 +208,7 @@ def build_router(deps: Deps) -> APIRouter:
                 "player": _player_state(deps.engine),
                 "bluetooth": deps.bt.last_state,
                 "cookies": cookies_status(conn, deps.config.cookies_path),
+                "youtube_account": youtube_account_state(deps.youtube_oauth),
                 "claude": claude_status(conn),
                 "source": source_status(conn),
                 "ytdlp_version": YTDLP_VERSION,

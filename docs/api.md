@@ -35,10 +35,10 @@ Every response, success or error, has the same shape:
 | 400 | Bad request the server understood but refuses (bad link, empty search, wrong reorder ids) |
 | 404 | Not found (unknown route, video, queue item, request or trait) |
 | 405 | Method not allowed on this path |
-| 409 | The player rejected the command (`error` is mpv's message) |
+| 409 | The player rejected the command (`error` is mpv's message), or a YouTube sign-in request that does not fit the current state (not set up, already connected) |
 | 422 | Validation failed. `error` names each bad field: `"<field>: <message>"`, joined by `"; "`, e.g. `"satisfaction: Input should be less than or equal to 10"` |
 | 500 | Unexpected server error: `error` is always `"internal error"` (details are in the server log) |
-| 502 | YouTube search failed |
+| 502 | YouTube search failed, or Google refused / could not be reached for sign-in |
 | 503 | `"player unavailable"` (mpv is down) or `"YouTube sign-in required (cookies expired)"` |
 
 ## Shared shapes
@@ -462,6 +462,98 @@ Response `200`: the updated Taste.
 Errors: `404` `"no taste profile yet"` or `"'hardware teardowns' is not in likes"`; `422` for a bad
 `kind`.
 
+## YouTube account
+
+Sign-in to the listener's YouTube account with Google's device flow: the Pi gets a short
+code, the listener enters it at google.com/device on any phone or PC, and the server polls
+Google in the background until it is approved. The server only asks for read-only access
+(`youtube.readonly`). Cookies stay optional: they add watch history, recommendations and
+Watch Later.
+
+**YouTubeAccount** (every key is always present, `null` when it does not apply):
+
+```json
+{
+  "state": "pending",
+  "user_code": "ABCD-EFGH",
+  "verification_url": "https://www.google.com/device",
+  "expires_at": "2026-11-01T15:30:00+00:00",
+  "error": null,
+  "channel_title": null
+}
+```
+
+| `state` | Meaning | Fields set |
+|---|---|---|
+| `"unconfigured"` | No OAuth client ID/secret on the Pi: "YouTube sign-in isn't set up on the Pi yet." | none |
+| `"disconnected"` | Set up, not signed in | none |
+| `"pending"` | A code is waiting to be entered | `user_code`, `verification_url`, `expires_at` |
+| `"connected"` | Signed in | `channel_title` (may be `null` if YouTube could not be asked; cached, 1 quota unit the first time) |
+| `"error"` | The last sign-in failed (denied, code expired, Google refused) | `error`, a message to show as is |
+
+A pending code that passes `expires_at` turns into `"error"` (`"the code expired before it
+was entered; try again"`). If Google later rejects the saved sign-in (revoked in the Google
+account, or expired), the server deletes it, the state goes back to `"disconnected"`, and a
+`youtube` status event with a message starting `OAuthRevoked:` is logged.
+
+Right after a successful sign-in the server runs an account import in the background
+(subscriptions, likes and playlists), and seeds or refreshes the taste profile from it.
+
+### GET /api/youtube/oauth
+
+The current sign-in state. Poll it every few seconds while `state` is `"pending"`.
+
+Response `200`:
+
+```json
+{"ok": true, "data": {"state": "connected", "user_code": null, "verification_url": null, "expires_at": null, "error": null, "channel_title": "Jamil's Channel"}, "error": null}
+```
+
+```json
+{"ok": true, "data": {"state": "unconfigured", "user_code": null, "verification_url": null, "expires_at": null, "error": null, "channel_title": null}, "error": null}
+```
+
+### POST /api/youtube/oauth/start
+
+Start a sign-in: asks Google for a code and starts polling for approval. No body. While a
+code is already pending, returns that same code (no new request to Google). Allowed from
+`"disconnected"` and `"error"`.
+
+Response `200`:
+
+```json
+{"ok": true, "data": {"state": "pending", "user_code": "ABCD-EFGH", "verification_url": "https://www.google.com/device", "expires_at": "2026-11-01T15:30:00+00:00", "interval_s": 5}, "error": null}
+```
+
+`interval_s` is how often the server polls Google; the app can poll `GET /api/youtube/oauth`
+at its own pace (every 3 s is fine).
+
+Errors:
+
+```json
+{"ok": false, "data": null, "error": "YouTube sign-in isn't set up on the Pi yet"}
+```
+
+- `409` `"YouTube sign-in isn't set up on the Pi yet"` (state `"unconfigured"`)
+- `409` `"already connected; disconnect first"`
+- `502` `"could not reach Google"` or `"Google refused the sign-in request: <code>"`
+
+### POST /api/youtube/oauth
+
+Same as `POST /api/youtube/oauth/start` (alias).
+
+### DELETE /api/youtube/oauth
+
+Disconnect: cancels a pending code, revokes the token at Google (best effort), deletes it
+from the Pi, and returns the new state (`"disconnected"`, or `"unconfigured"` when sign-in
+is not set up). Safe to call in any state.
+
+Response `200`:
+
+```json
+{"ok": true, "data": {"state": "disconnected", "user_code": null, "verification_url": null, "expires_at": null, "error": null, "channel_title": null}, "error": null}
+```
+
 ## Agent
 
 ### POST /api/agent/requests
@@ -577,6 +669,7 @@ Response `200`:
     "player": "playing",
     "bluetooth": "connected",
     "cookies": "ok",
+    "youtube_account": "connected",
     "claude": "ok",
     "source": "ok",
     "ytdlp_version": "2026.03.17",
@@ -595,6 +688,7 @@ Response `200`:
 | `player` | `"playing"`, `"paused"`, `"idle"`, or `"unavailable"` when mpv is down |
 | `bluetooth` | `"connected"`, `"disconnected"`, `"unconfigured"` (no speaker set) |
 | `cookies` | `"ok"`; `"missing"` (no cookies file, or a file with no non-expired YouTube sign-in cookies, i.e. "not signed in"; yt-dlp and mpv create anonymous-only files themselves); `"expired"` (YouTube's last answer was a sign-in / "not a bot" check, made after the cookies file was last written; re-export the cookies and it clears, as does the next successful account import) |
+| `youtube_account` | `"unconfigured"`, `"disconnected"`, `"pending"`, `"connected"` or `"error"`: the `state` of `GET /api/youtube/oauth` (no channel title here) |
 | `claude` | `"ok"`, `"rate_limited"`, `"not_logged_in"` (run `claude login` on the Pi), `"missing"` (CLI not installed), `"unknown"` (no agent run yet) |
 | `source` | `"ok"`, or `"broken"` after 3 playback errors in a row (the player stopped advancing so the queue is not drained; the failing item is back at the front). Clears on the next successful play. Usually stale yt-dlp or cookies |
 | `ytdlp_version` | installed yt-dlp version string |

@@ -110,7 +110,8 @@ def test_status_shape(api, tmp_path):
         log_event(conn, "player", "error", "mpv process died")
     data = _status(api)
     assert set(data) == {"player", "bluetooth", "cookies", "claude", "ytdlp_version",
-                         "quota_used_today", "quota_ceiling", "events", "source"}
+                         "quota_used_today", "quota_ceiling", "events", "source",
+                         "youtube_account"}
     assert data["source"] == "ok"
     assert data["player"] == "idle"
     assert data["bluetooth"] == "connected"
