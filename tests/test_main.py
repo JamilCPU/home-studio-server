@@ -393,3 +393,143 @@ def test_build_runtime_failure_closes_mpv(tmp_path):
     with pytest.raises(ValueError):
         build_runtime(AppConfig(db_path=str(tmp_path / "s.db")), _fake_factories(mpv, broken_bt))
     assert mpv.closed
+
+
+# -- OAuth account import ---------------------------------------------------------------
+
+
+class FakeAccount:
+    def __init__(self, connected=True, subs=None, liked=None, playlist=None) -> None:
+        self._connected = connected
+        self.subs = subs if subs is not None else [FeedItem("", "Sub A", "UCa", "Sub A")]
+        self.liked_items = liked if liked is not None else [FeedItem("o1", "Liked 1", "UCx", "C")]
+        self.playlist = playlist if playlist is not None else [FeedItem("p1", "Pl 1", "UCx", "C")]
+        self.calls: list[str] = []
+
+    def connected(self) -> bool:
+        return self._connected
+
+    def subscriptions(self):
+        self.calls.append("subscriptions")
+        return list(self.subs)
+
+    def liked(self):
+        self.calls.append("liked")
+        return list(self.liked_items)
+
+    def playlist_items(self):
+        self.calls.append("playlist_items")
+        return list(self.playlist)
+
+
+def signed_in_cookies(tmp_path) -> str:
+    path = tmp_path / "cookies.txt"
+    expiry = int(time.time()) + 86400
+    path.write_text("# Netscape HTTP Cookie File\n"
+                    f".youtube.com\tTRUE\t/\tTRUE\t{expiry}\t__Secure-3PSID\tfake\n")
+    return str(path)
+
+
+def test_oauth_import_records_kinds_and_skips_cookie_feeds_without_cookies(db, tmp_path):
+    yt = FakeYt(feeds={"history": ["h1"]})
+    account = FakeAccount()
+    counts = import_account(db, ytdlp=yt, data_api=None, claude=FakeClaude([TASTE_JSON]),
+                            account=account, cookies_path=str(tmp_path / "none.txt"))
+    assert account.calls == ["subscriptions", "liked", "playlist_items"]
+    assert yt.feed_calls == []  # no cookies: yt-dlp feeds skipped
+    assert [r["channel_id"] for r in imported(db, "subscription")] == ["UCa"]
+    assert [r["video_id"] for r in imported(db, "liked")] == ["o1"]
+    assert [r["video_id"] for r in imported(db, "playlist")] == ["p1"]
+    assert counts == {"channels": 1, "liked": 1, "playlists": 1, "history": 0,
+                      "recommended": 0, "watch_later": 0, "videos": 2, "taste_seeded": 1}
+    messages = [r[0] for r in db.execute(
+        "SELECT message FROM status_events WHERE component = 'import' ORDER BY id")]
+    assert messages[0] == "cookie feeds skipped: cookies missing"
+    assert messages[-1] == ("ok (oauth): 1 channels, 1 liked, 1 playlist videos, "
+                            "0 history, 0 recommended, 0 watch_later, 2 new videos")
+    assert latest_event(db, "ytdlp") is None
+
+
+def test_oauth_import_runs_cookie_feeds_when_cookies_ok(db, tmp_path):
+    yt = FakeYt(feeds={"history": ["h1"], "recommended": ["r1"], "watch_later": ["w1"],
+                       "liked": ["ignored"], "subscriptions": ["ignored2"]})
+    counts = import_account(db, ytdlp=yt, data_api=None, claude=FakeClaude([TASTE_JSON]),
+                            account=FakeAccount(), cookies_path=signed_in_cookies(tmp_path))
+    assert [k for k, _ in yt.feed_calls] == ["history", "recommended", "watch_later"]
+    assert [r["video_id"] for r in imported(db, "playlist")] == ["p1", "w1"]
+    assert [r["video_id"] for r in imported(db, "history")] == ["h1"]
+    assert counts["history"] == counts["recommended"] == counts["watch_later"] == 1
+    assert counts["videos"] == 5
+    assert latest_event(db, "ytdlp")[:2] == ("info", "ok: account import")
+
+
+def test_oauth_import_cookie_auth_error_does_not_fail_import(db, tmp_path):
+    yt = FakeYt(feed_errors={"history": SourceAuthError("sign in")})
+    counts = import_account(db, ytdlp=yt, data_api=None, claude=FakeClaude([TASTE_JSON]),
+                            account=FakeAccount(), cookies_path=signed_in_cookies(tmp_path))
+    assert counts["liked"] == 1
+    assert latest_event(db, "ytdlp")[0] == "error"
+    assert latest_event(db, "import")[1].startswith("ok (oauth):")
+
+
+def test_oauth_import_dedupes_against_cookie_era_rows(db, tmp_path):
+    from src.store.settings import record_import
+
+    record_import(db, "liked", video_id="o1", title="Liked 1")
+    record_import(db, "subscription", channel_id="UCa", title="Sub A")
+    import_account(db, ytdlp=FakeYt(), data_api=None, claude=FakeClaude([TASTE_JSON]),
+                   account=FakeAccount(), cookies_path=str(tmp_path / "none.txt"))
+    assert len(imported(db, "liked")) == 1
+    assert len(imported(db, "subscription")) == 1
+
+
+def test_first_oauth_import_refreshes_an_existing_profile(db, tmp_path):
+    from src.store.agent import save_taste
+
+    save_taste(db, "cookie-era profile", ["x"], [], "agent")
+    refreshed = json.dumps({"summary": "From OAuth", "likes": ["y"], "dislikes": []})
+    claude = FakeClaude([refreshed])
+    counts = import_account(db, ytdlp=FakeYt(), data_api=None, claude=claude,
+                            account=FakeAccount(), cookies_path=str(tmp_path / "none.txt"))
+    assert counts["taste_seeded"] == 1
+    assert latest_taste(db).summary == "From OAuth"
+    again = import_account(db, ytdlp=FakeYt(), data_api=None, claude=FakeClaude([]),
+                           account=FakeAccount(), cookies_path=str(tmp_path / "none.txt"))
+    assert again["taste_seeded"] == 0  # only the first OAuth import refreshes
+
+
+def test_disconnected_account_uses_the_cookie_path(db, tmp_path):
+    yt = FakeYt(feeds={"liked": ["l1"]})
+    account = FakeAccount(connected=False)
+    counts = import_account(db, ytdlp=yt, data_api=None, claude=FakeClaude([TASTE_JSON]),
+                            account=account, cookies_path=str(tmp_path / "none.txt"))
+    assert account.calls == []
+    assert counts["channels"] == 2 and "playlists" not in counts
+
+
+def test_oauth_import_error_is_logged_and_raised(db, tmp_path):
+    from src.sources.youtube_oauth import OAuthError
+
+    class Broken(FakeAccount):
+        def liked(self):
+            raise OAuthError("token refresh failed: unreachable")
+
+    with pytest.raises(OAuthError):
+        import_account(db, ytdlp=FakeYt(), data_api=None, claude=FakeClaude([]),
+                       account=Broken(), cookies_path=str(tmp_path / "none.txt"))
+    assert latest_event(db, "import")[:2] == ("error",
+                                              "OAuthError: token refresh failed: unreachable")
+
+
+def test_build_runtime_wires_youtube_oauth(tmp_path):
+    config = AppConfig(db_path=str(tmp_path / "w.db"), cookies_path=str(tmp_path / "c.txt"),
+                       youtube_oauth_token_path=str(tmp_path / "secrets" / "o.json"))
+    runtime = build_runtime(config, _factories(FakeYt(), Recorder(None)))
+    assert runtime.deps.youtube_oauth.state() == "unconfigured"
+    configured = AppConfig(db_path=str(tmp_path / "w.db"), cookies_path=str(tmp_path / "c.txt"),
+                           youtube_oauth_client_id="fake-id", youtube_oauth_client_secret="fake",
+                           youtube_oauth_token_path=str(tmp_path / "secrets" / "o.json"))
+    runtime = build_runtime(configured, _factories(FakeYt(), Recorder(None)))
+    assert runtime.deps.youtube_oauth.state() == "disconnected"
+    client = TestClient(create_app(runtime.deps))
+    assert client.get("/api/status").json()["data"]["youtube_account"] == "disconnected"

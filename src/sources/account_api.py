@@ -29,6 +29,9 @@ class AccountApi:
         self._oauth = oauth
         self._max_pages = max_pages
 
+    def connected(self) -> bool:
+        return self._oauth.state() == "connected"
+
     def _pages(self, what: str, make: Callable[[Any, str | None], Any]) -> Iterator[dict]:
         token: str | None = None
         for _ in range(self._max_pages):
