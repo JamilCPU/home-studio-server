@@ -1,0 +1,106 @@
+"""Catalog cache: fetch each video and transcript at most once, persisted in SQLite."""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+from dataclasses import replace
+
+from src.sources.data_api import DataApi, QuotaExceeded
+from src.sources.ytdlp import SourceAuthError, SourceError, YtDlp
+from src.store.settings import log_event
+from src.store.videos import (
+    Video,
+    chapters_checked,
+    get_video,
+    mark_chapters_checked,
+    set_transcript,
+    upsert_video,
+)
+from src.transcript import truncate_transcript
+
+logger = logging.getLogger(__name__)
+
+COMPONENT = "catalog"
+
+
+def ensure_videos(
+    conn: sqlite3.Connection, ids: list[str], data_api: DataApi | None, ytdlp: YtDlp
+) -> list[Video]:
+    """Return Videos for `ids` in input order, fetching only those not yet stored.
+
+    Without a Data API (no key), once its quota is spent, or when it fails for any
+    other reason, yt-dlp fetches the metadata. Ids that cannot be fetched are skipped. SourceAuthError propagates.
+    """
+    unique = list(dict.fromkeys(ids))
+    missing = [i for i in unique if get_video(conn, i) is None]
+    if missing:
+        fetched: list[Video] = []
+        if data_api is None:
+            _ytdlp_metadata(conn, missing, ytdlp)
+        else:
+            try:
+                fetched = data_api.video_details(missing)
+            except QuotaExceeded:
+                logger.warning("Data API quota exhausted; using yt-dlp for %d ids", len(missing))
+                _ytdlp_metadata(conn, missing, ytdlp)
+            except SourceAuthError:
+                raise
+            except Exception:  # noqa: BLE001 - bad key, network: any Data API failure
+                logger.exception("Data API video_details failed; using yt-dlp")
+                _ytdlp_metadata(conn, missing, ytdlp)
+        for video in fetched:
+            upsert_video(conn, video)
+    found = (get_video(conn, i) for i in unique)
+    return [v for v in found if v is not None]
+
+
+def _ytdlp_metadata(conn: sqlite3.Connection, ids: list[str], ytdlp: YtDlp) -> None:
+    """Store yt-dlp metadata for each id; per-video failures are skipped."""
+    for video_id in ids:
+        try:
+            upsert_video(conn, ytdlp.metadata(video_id))
+        except SourceAuthError:
+            raise
+        except SourceError as exc:
+            logger.warning("yt-dlp metadata failed for %s: %s", video_id, exc)
+
+
+def ensure_transcript(
+    conn: sqlite3.Connection, video_id: str, ytdlp: YtDlp, max_chars: int = 3000
+) -> str | None:
+    """Return the (truncated) transcript, fetching and caching it on first use."""
+    video = get_video(conn, video_id)
+    if video is not None and video.transcript:
+        return video.transcript
+    text = ytdlp.transcript(video_id)
+    if not text:
+        return None
+    text = truncate_transcript(text, max_chars)
+    if video is not None:
+        set_transcript(conn, video_id, text)
+    return text
+
+
+def ensure_chapters(conn: sqlite3.Connection, video_id: str, ytdlp: YtDlp) -> None:
+    """Fill chapters for a stored video that has none; never raises on source errors.
+
+    A lookup that finds no chapters is remembered (``chapters_checked``) so later plays
+    do not fetch again; a failed lookup is not, so it is retried next time.
+    """
+    video = get_video(conn, video_id)
+    if video is None or video.chapters or chapters_checked(conn, video_id):
+        return
+    try:
+        fetched = ytdlp.metadata(video_id)
+    except SourceAuthError:
+        logger.warning("chapters unavailable for %s: auth required", video_id)
+        log_event(conn, "ytdlp", "error", "SourceAuthError: cookies or sign-in check")
+        return
+    except SourceError as exc:
+        logger.warning("could not fetch chapters for %s: %s", video_id, exc)
+        log_event(conn, COMPONENT, "warn", f"chapters unavailable for {video_id}")
+        return
+    if fetched.chapters:
+        upsert_video(conn, replace(video, chapters=fetched.chapters))
+    mark_chapters_checked(conn, video_id)

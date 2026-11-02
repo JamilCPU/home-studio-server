@@ -99,46 +99,18 @@ class TestLoadConfig:
         cfg = load_config(config_file)
         assert cfg.client_id == ""
         assert cfg.max_candidates == 80
-        assert cfg.min_score == 7.0
         assert cfg.language == "en"
-        assert cfg.api_port == 5000
-        assert cfg.search_topics == ()
+        assert cfg.api_port == 8765
 
     def test_curation_section(self, tmp_path: Path) -> None:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
-            yaml.dump(
-                {
-                    "curation": {
-                        "max_candidates": 200,
-                        "min_score": 8.5,
-                        "search_topics": ["AI", "ML"],
-                        "language": "fr",
-                    },
-                }
-            ),
+            yaml.dump({"curation": {"max_candidates": 200, "language": "fr"}}),
             encoding="utf-8",
         )
         cfg = load_config(config_file)
         assert cfg.max_candidates == 200
-        assert cfg.min_score == 8.5
-        assert cfg.search_topics == ("AI", "ML")
         assert cfg.language == "fr"
-
-    def test_bluetooth_devices(self, tmp_path: Path) -> None:
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            yaml.dump(
-                {
-                    "bluetooth": {
-                        "devices": {"speaker": "AA:BB:CC:DD:EE:FF"},
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        cfg = load_config(config_file)
-        assert cfg.bt_devices == {"speaker": "AA:BB:CC:DD:EE:FF"}
 
     def test_local_yaml_merging(self, tmp_path: Path) -> None:
         config_file = tmp_path / "config.yaml"
@@ -156,7 +128,7 @@ class TestLoadConfig:
             yaml.dump(
                 {
                     "youtube": {"client_id": "local-id"},
-                    "curation": {"min_score": 9.0},
+                    "curation": {"language": "de"},
                 }
             ),
             encoding="utf-8",
@@ -166,9 +138,9 @@ class TestLoadConfig:
         assert cfg.client_id == "local-id"
         # local does NOT wipe project_id from base
         assert cfg.project_id == "base-proj"
-        # local adds min_score while keeping max_candidates from base
+        # local adds language while keeping max_candidates from base
         assert cfg.max_candidates == 50
-        assert cfg.min_score == 9.0
+        assert cfg.language == "de"
 
 
 # ---------------------------------------------------------------------------
@@ -244,3 +216,152 @@ class TestEnvOverrides:
         monkeypatch.delenv("BRAINWASH_CLIENT_ID", raising=False)
         cfg = load_config(config_file)
         assert cfg.client_id == "yaml-id"
+
+
+# ---------------------------------------------------------------------------
+# Home Studio fields
+# ---------------------------------------------------------------------------
+
+
+class TestHomeStudioConfig:
+    """Tests for the Home Studio config fields and HOME_STUDIO_* overrides."""
+
+    def test_defaults(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("{}", encoding="utf-8")
+        cfg = load_config(config_file)
+        assert cfg.bt_adapter == "hci1"
+        assert cfg.timezone == "America/Chicago"
+        assert cfg.api_port == 8765
+        assert cfg.quota_ceiling == 9500
+        assert cfg.db_path == str(tmp_path / "data" / "home_studio.db")
+        assert cfg.cookies_path == str(tmp_path / "secrets" / "cookies.txt")
+        assert cfg.mpv_socket == "/tmp/home-studio-mpv.sock"
+        assert cfg.output_device_label == "Echo"
+        assert cfg.claude_timeout_s == 300
+        assert "--strict-mcp-config" in cfg.claude_args
+        assert cfg.claude_args[cfg.claude_args.index("--tools") + 1] == ""
+        assert cfg.youtube_api_key == ""
+        assert cfg.bt_speaker_mac == ""
+
+    def test_env_overrides_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("HOME_STUDIO_YOUTUBE_API_KEY", "k")
+        cfg = load_config(config_file)
+        assert cfg.youtube_api_key == "k"
+
+    def test_env_overrides_mac_and_cookies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump({"bluetooth": {"speaker_mac": "yaml"}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("HOME_STUDIO_BT_SPEAKER_MAC", "11:22")
+        monkeypatch.setenv("HOME_STUDIO_COOKIES_PATH", "/x/c.txt")
+        cfg = load_config(config_file)
+        assert cfg.bt_speaker_mac == "11:22"
+        assert cfg.cookies_path == "/x/c.txt"
+
+    def test_local_yaml_merges(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump({"bluetooth": {"adapter": "hci1"}}), encoding="utf-8"
+        )
+        (tmp_path / "config.local.yaml").write_text(
+            yaml.dump({"bluetooth": {"speaker_mac": "AA:BB"}}), encoding="utf-8"
+        )
+        cfg = load_config(config_file)
+        assert cfg.bt_speaker_mac == "AA:BB"
+        assert cfg.bt_adapter == "hci1"
+
+    def test_yaml_sections_map(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "youtube": {"api_key": "yk", "cookies_path": "c.txt"},
+                    "db": {"path": "d.db"},
+                    "player": {"mpv_socket": "/tmp/s.sock"},
+                    "bluetooth": {"label": "Kitchen"},
+                    "agent": {"claude_command": "cl", "timeout_s": 60,
+                              "claude_args": ["--tools", "", "--model", "sonnet"]},
+                    "api": {"host": "127.0.0.1", "port": 9000},
+                    "general": {"timezone": "UTC"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = load_config(config_file)
+        assert cfg.youtube_api_key == "yk"
+        assert cfg.cookies_path == str(tmp_path / "c.txt")
+        assert cfg.db_path == str(tmp_path / "d.db")
+        assert cfg.mpv_socket == "/tmp/s.sock"
+        assert cfg.output_device_label == "Kitchen"
+        assert cfg.claude_command == "cl"
+        assert cfg.claude_timeout_s == 60
+        assert cfg.claude_args == ("--tools", "", "--model", "sonnet")
+        assert cfg.api_host == "127.0.0.1"
+        assert cfg.api_port == 9000
+        assert cfg.timezone == "UTC"
+
+    def test_relative_paths_resolve_against_config_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conf_dir = tmp_path / "conf"
+        conf_dir.mkdir()
+        config_file = conf_dir / "config.yaml"
+        config_file.write_text(
+            yaml.dump({"youtube": {"cookies_path": "s/c.txt"}, "db": {"path": "data/x.db"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)  # cwd differs from the config dir
+        cfg = load_config(Path("conf/config.yaml"))
+        assert cfg.cookies_path == str(conf_dir / "s" / "c.txt")
+        assert cfg.db_path == str(conf_dir / "data" / "x.db")
+
+    def test_absolute_paths_kept(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        absolute = tmp_path / "elsewhere" / "h.db"
+        config_file.write_text(yaml.dump({"db": {"path": str(absolute)}}), encoding="utf-8")
+        assert load_config(config_file).db_path == str(absolute)
+
+
+class TestYouTubeOAuthConfig:
+    """youtube.oauth_client_id / oauth_client_secret / oauth_token_path."""
+
+    def test_defaults(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("{}", encoding="utf-8")
+        cfg = load_config(config_file)
+        assert cfg.youtube_oauth_client_id == ""
+        assert cfg.youtube_oauth_client_secret == ""
+        assert cfg.youtube_oauth_token_path == str(tmp_path / "secrets" / "youtube_oauth.json")
+
+    def test_local_yaml_sets_client(self, tmp_path: Path) -> None:
+        (tmp_path / "config.yaml").write_text(
+            yaml.dump({"youtube": {"api_key": "", "oauth_token_path": "t/o.json"}}),
+            encoding="utf-8",
+        )
+        (tmp_path / "config.local.yaml").write_text(
+            yaml.dump({"youtube": {"oauth_client_id": "fake-id.example",
+                                   "oauth_client_secret": "fake-secret"}}),
+            encoding="utf-8",
+        )
+        cfg = load_config(tmp_path / "config.yaml")
+        assert cfg.youtube_oauth_client_id == "fake-id.example"
+        assert cfg.youtube_oauth_client_secret == "fake-secret"
+        assert cfg.youtube_oauth_token_path == str(tmp_path / "t" / "o.json")
+
+    def test_values_are_stripped(self, tmp_path: Path) -> None:
+        (tmp_path / "config.yaml").write_text(
+            yaml.dump({"youtube": {"oauth_client_id": "  fake-id \n",
+                                   "oauth_client_secret": None}}),
+            encoding="utf-8",
+        )
+        cfg = load_config(tmp_path / "config.yaml")
+        assert cfg.youtube_oauth_client_id == "fake-id"
+        assert cfg.youtube_oauth_client_secret == ""
