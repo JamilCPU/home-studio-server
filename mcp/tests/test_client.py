@@ -40,3 +40,20 @@ async def test_non_json_is_tool_error(api) -> None:
     route.respond(200, json=[1, 2, 3])
     with pytest.raises(ToolError, match=r"\(HTTP 200\)"):
         await HomeStudioClient(HOME).get("/api/now")
+
+
+async def test_get_dict_shape_checks(api) -> None:
+    route = api.get("/api/x")
+    client = HomeStudioClient(HOME)
+    unexpected = r"^Home Studio returned an unexpected response \(HTTP 200\)$"
+    for data in (None, [1], "text", {"items": None}, {"items": [1]}, {}):
+        route.respond(json=ok(data))
+        with pytest.raises(ToolError, match=unexpected):
+            await client.get_dict("/api/x", list_key="items")
+    route.respond(json=ok(None))
+    assert await client.get_dict("/api/x", nullable=True) is None
+    route.respond(json=ok({"items": [{"id": 1}], "remaining_s": 3}))
+    assert await client.get_dict("/api/x", list_key="items") == {
+        "items": [{"id": 1}],
+        "remaining_s": 3,
+    }

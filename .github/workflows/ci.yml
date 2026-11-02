@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e .[dev]
-      # TODO: tests/test_transcript.py fails against the installed youtube-transcript-api (mock mismatch); fix and drop the --ignore.
+      # TODO: src/transcript.py calls YouTubeTranscriptApi.get_transcript, removed in youtube-transcript-api 1.x, so tests/test_transcript.py fails; fix the source and drop the --ignore.
       - run: pytest -q -p no:cacheprovider --ignore=tests/test_transcript.py
 
   mcp:
