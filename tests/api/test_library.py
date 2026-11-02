@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from src.store.agent import latest_taste, pending_corrections, save_taste
 from src.store.videos import end_play, start_play
 from tests.api.conftest import make_video
@@ -96,6 +98,77 @@ def test_history_unrated_and_paging(api):
 
 def test_history_limit_validated(api):
     assert api.client.get("/api/history", params={"limit": 0}).status_code == 422
+
+
+def _set_started_at(api, play_id, started_at):
+    with api.conn() as conn:
+        conn.execute("UPDATE plays SET started_at=? WHERE id=?", (started_at, play_id))
+        conn.commit()
+
+
+def test_history_since_query(api):
+    old = _played(api, "aaaaaaaaaaa")
+    new = _played(api, "bbbbbbbbbbb")
+    _set_started_at(api, old, "2026-10-01T00:00:00+00:00")
+    _set_started_at(api, new, "2026-11-01T12:00:00+00:00")
+    resp = api.client.get("/api/history", params={"since": "2026-11-01T00:00:00Z"})
+    assert resp.status_code == 200
+    assert [e["video"]["video_id"] for e in resp.json()["data"]["entries"]] == ["bbbbbbbbbbb"]
+    offset = api.client.get("/api/history", params={"since": "2026-11-01T02:00:00+02:00"})
+    assert [e["play_id"] for e in offset.json()["data"]["entries"]] == [new]
+    naive = api.client.get("/api/history", params={"since": "2026-11-01T13:00:00"})
+    assert naive.json()["data"]["entries"] == []
+
+
+def test_history_bad_since_422(api):
+    resp = api.client.get("/api/history", params={"since": "yesterday"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["ok"] is False
+    assert "since" in body["error"]
+
+
+def test_get_ratings_shape(api):
+    api.stored(make_video(VID))
+    api.client.post("/api/ratings", json={"video_id": VID, "liked": True,
+                                          "satisfaction": 8, "notes": "great"})
+    resp = api.client.get("/api/ratings")
+    assert resp.status_code == 200
+    ratings = resp.json()["data"]["ratings"]
+    assert len(ratings) == 1
+    assert set(ratings[0]) == {"id", "video_id", "title", "channel", "liked", "satisfaction",
+                               "notes", "created_at"}
+    assert ratings[0]["video_id"] == VID
+    assert ratings[0]["title"] == f"Title {VID}"
+    assert ratings[0]["channel"] == "Some Channel"
+    assert ratings[0]["liked"] is True
+    assert ratings[0]["satisfaction"] == 8
+    assert ratings[0]["notes"] == "great"
+
+
+def test_get_ratings_since_and_limit(api):
+    api.stored(make_video(VID))
+    ids = [api.client.post("/api/ratings", json={"video_id": VID, "satisfaction": n})
+           .json()["data"]["id"] for n in (3, 4, 5)]
+    with api.conn() as conn:
+        for rating_id, stamp in zip(ids, ("2026-10-01T00:00:00+00:00",
+                                          "2026-11-01T10:00:00+00:00",
+                                          "2026-11-01T11:00:00+00:00")):
+            conn.execute("UPDATE ratings SET created_at=? WHERE id=?", (stamp, rating_id))
+        conn.commit()
+    since = {"since": "2026-11-01T00:00:00Z"}
+    got = api.client.get("/api/ratings", params=since).json()["data"]["ratings"]
+    assert [r["id"] for r in got] == [ids[2], ids[1]]
+    one = api.client.get("/api/ratings", params={**since, "limit": 1}).json()["data"]["ratings"]
+    assert [r["id"] for r in one] == [ids[2]]
+    assert api.client.get("/api/ratings", params={"since": "nope"}).status_code == 422
+
+
+@pytest.mark.parametrize("limit", [0, 201])
+def test_get_ratings_limit_out_of_range_422(api, limit):
+    resp = api.client.get("/api/ratings", params={"limit": limit})
+    assert resp.status_code == 422
+    assert "limit" in resp.json()["error"]
 
 
 def test_get_taste_null_when_none(api):
