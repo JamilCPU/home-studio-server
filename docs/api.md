@@ -407,8 +407,11 @@ Errors: `404` `"video not found"`; `422` e.g. `"satisfaction: Input should be le
 
 Plays, newest first.
 
-Query: `unrated` (bool, default `false`: only plays whose video has no rating), `limit` (1–200,
-default 50), `offset` (≥ 0, default 0). Example: `/api/history?unrated=true&limit=20&offset=0`.
+Query: `unrated` (bool, default `false`: only plays whose video has no rating), `since` (ISO 8601
+timestamp, optional: only plays started at or after it), `limit` (1–200, default 50), `offset`
+(≥ 0, default 0). A `since` without a UTC offset is taken as UTC, and a trailing `Z` is accepted;
+URL-encode a `+` offset as `%2B`. Example:
+`/api/history?unrated=true&since=2026-11-01T00:00:00Z&limit=20&offset=0`.
 
 Response `200`:
 
@@ -416,7 +419,27 @@ Response `200`:
 {"ok": true, "data": {"entries": [{"play_id": 17, "video": {"video_id": "dQw4w9WgXcQ", "title": "How GPUs Work", "channel": "Some Channel", "thumbnail_url": null, "duration_s": 1834, "chapters": []}, "started_at": "2026-11-01T14:03:22.512345+00:00", "seconds_listened": 912.5, "end_reason": "skipped", "source": "agent", "rating": null}]}, "error": null}
 ```
 
-Errors: `422` for an out-of-range `limit` or `offset`.
+Errors: `422` for an out-of-range `limit` or `offset`, or a `since` that is not an ISO 8601
+timestamp (`"since: must be an ISO 8601 timestamp"`).
+
+### GET /api/ratings
+
+Every rating, newest first. Unlike history, which shows only the latest rating per video, this lists
+each rating you have posted, so earlier ratings of the same video appear too.
+
+Query: `since` (ISO 8601 timestamp, optional: only ratings created at or after it; same rules as on
+GET `/api/history`), `limit` (1–200, default 50). Example: `/api/ratings?since=2026-11-01T00:00:00Z&limit=20`.
+
+Response `200`:
+
+```json
+{"ok": true, "data": {"ratings": [{"id": 12, "video_id": "dQw4w9WgXcQ", "title": "How GPUs Work", "channel": "Some Channel", "liked": true, "satisfaction": 8, "notes": "loved the memory section", "created_at": "2026-11-01T14:21:05.123456+00:00"}]}, "error": null}
+```
+
+`liked`, `satisfaction`, `notes` and `channel` are `null` when not set.
+
+Errors: `422` for an out-of-range `limit` or a `since` that is not an ISO 8601 timestamp
+(`"since: must be an ISO 8601 timestamp"`).
 
 ## Taste
 
