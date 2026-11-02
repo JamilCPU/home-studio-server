@@ -9,12 +9,14 @@ import pytest
 
 from src.store.videos import (
     Chapter,
+    RatingEntry,
     Video,
     add_rating,
     disliked_video_ids,
     end_play,
     get_video,
     history,
+    list_ratings,
     played_video_ids,
     recent_feedback,
     set_transcript,
@@ -103,6 +105,57 @@ def test_history_newest_first_with_paging(db):
         end_play(db, start_play(db, vid, None), 1.0, "finished")
     assert [e.video.video_id for e in history(db)] == ["c", "b", "a"]
     assert [e.video.video_id for e in history(db, limit=1, offset=1)] == ["b"]
+
+
+def test_history_since_filters_by_started_at(db):
+    for vid in ("old", "new"):
+        upsert_video(db, make_video(vid))
+        start_play(db, vid, None)
+    db.execute(
+        "UPDATE plays SET started_at='2026-10-01T00:00:00+00:00' WHERE video_id='old'"
+    )
+    db.execute(
+        "UPDATE plays SET started_at='2026-11-01T12:00:00+00:00' WHERE video_id='new'"
+    )
+    db.commit()
+    since = "2026-11-01T00:00:00+00:00"
+    assert [e.video.video_id for e in history(db, since=since)] == ["new"]
+    assert [e.video.video_id for e in history(db, since="2026-11-01T12:00:00+00:00")] == ["new"]
+    assert len(history(db)) == 2
+
+
+def _stamp_ratings(db, stamps):
+    for rating_id, created_at in stamps.items():
+        db.execute("UPDATE ratings SET created_at=? WHERE id=?", (created_at, rating_id))
+    db.commit()
+
+
+def test_list_ratings_newest_first_all_rows(db):
+    upsert_video(db, make_video())
+    first = add_rating(db, "vid1", False, None, None)
+    second = add_rating(db, "vid1", True, 9, "better on reflection")
+    got = list_ratings(db)
+    assert [r.id for r in got] == [second, first]
+    assert got[0] == RatingEntry(
+        id=second, video_id="vid1", title="Title vid1", channel_name="Chan", liked=True,
+        satisfaction=9, notes="better on reflection", created_at=got[0].created_at,
+    )
+    assert got[1].liked is False
+    assert got[1].satisfaction is None
+
+
+def test_list_ratings_since_and_limit(db):
+    upsert_video(db, make_video())
+    ids = [add_rating(db, "vid1", None, n, None) for n in (3, 4, 5)]
+    _stamp_ratings(db, {
+        ids[0]: "2026-10-01T00:00:00+00:00",
+        ids[1]: "2026-11-01T10:00:00+00:00",
+        ids[2]: "2026-11-01T11:00:00+00:00",
+    })
+    since = "2026-11-01T00:00:00+00:00"
+    assert [r.id for r in list_ratings(db, since=since)] == [ids[2], ids[1]]
+    assert [r.id for r in list_ratings(db, since=since, limit=1)] == [ids[2]]
+    assert len(list_ratings(db)) == 3
 
 
 def test_multiple_ratings_kept_latest_shown(db):

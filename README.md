@@ -24,6 +24,13 @@ Design: [docs/superpowers/specs/2026-11-01-listening-station-design.md](docs/sup
 
 The API listens on port 8765 by default.
 
+## MCP server
+
+`mcp/` holds `homestudio-mcp`, a read-only MCP server over this API (taste, ratings,
+listening history, now playing, queue) for the assistant gateway. It runs beside the gateway,
+not on the Pi; CI publishes its image to `ghcr.io/jamilcpu/homestudio-mcp`. See
+[mcp/README.md](mcp/README.md).
+
 ## Deploying to the Pi
 
 From WSL on the Windows PC (the host is never committed):
