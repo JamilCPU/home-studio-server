@@ -1,8 +1,7 @@
 """MCP tools: the API is mocked with respx, tools run through an in-memory session."""
 
-import json
-
 import httpx
+import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from homestudio_mcp.client import HomeStudioClient
@@ -38,11 +37,14 @@ async def _call(name: str, args: dict | None = None):
 
 
 def _value(result):
-    """The tool's return value: wrapped structured output, or the JSON text for bare dicts."""
+    """The tool's structured output (list and optional returns are wrapped in "result")."""
     assert not result.isError, result.content
-    if result.structuredContent is not None:
-        return result.structuredContent["result"]
-    return json.loads(result.content[0].text)
+    assert result.structuredContent is not None
+    return result.structuredContent
+
+
+def _wrapped(result):
+    return _value(result)["result"]
 
 
 async def test_tools_registered() -> None:
@@ -52,6 +54,7 @@ async def test_tools_registered() -> None:
     for tool in tools.values():
         assert tool.description
         assert len(tool.description) < 300
+        assert tool.outputSchema is not None, tool.name
 
 
 async def test_taste_passthrough_and_null(api) -> None:
@@ -63,9 +66,9 @@ async def test_taste_passthrough_and_null(api) -> None:
     }
     route = api.get("/api/taste")
     route.respond(json=ok(taste))
-    assert _value(await _call("get_taste_profile")) == taste
+    assert _wrapped(await _call("get_taste_profile")) == taste
     route.respond(json=ok(None))
-    assert _value(await _call("get_taste_profile")) is None
+    assert _wrapped(await _call("get_taste_profile")) is None
 
 
 async def test_history_trimmed_and_params(api) -> None:
@@ -80,7 +83,7 @@ async def test_history_trimmed_and_params(api) -> None:
     }
     route = api.get("/api/history").respond(json=ok({"entries": [entry]}))
     args = {"since": "2026-11-01T00:00:00Z", "limit": 20}
-    result = _value(await _call("get_listening_history", args))
+    result = _wrapped(await _call("get_listening_history", args))
     assert dict(route.calls.last.request.url.params) == {
         "since": "2026-11-01T00:00:00Z",
         "limit": "20",
@@ -115,7 +118,7 @@ async def test_ratings_forwards_params(api) -> None:
         "created_at": "2026-11-01T14:21:05+00:00",
     }
     route = api.get("/api/ratings").respond(json=ok({"ratings": [rating]}))
-    assert _value(await _call("list_ratings", {"limit": 5, "since": "2026-11-01"})) == [rating]
+    assert _wrapped(await _call("list_ratings", {"limit": 5, "since": "2026-11-01"})) == [rating]
     assert dict(route.calls.last.request.url.params) == {"limit": "5", "since": "2026-11-01"}
     await _call("list_ratings")
     assert dict(route.calls.last.request.url.params) == {"limit": "50"}
@@ -177,10 +180,34 @@ async def test_queue_trimmed(api) -> None:
     }
 
 
-async def test_limit_out_of_range_is_tool_error() -> None:
+async def test_limit_out_of_range_is_tool_error(api) -> None:
+    routes = [api.get(path).respond(json=ok({})) for path in ("/api/ratings", "/api/history")]
     for name in ("list_ratings", "get_listening_history"):
-        assert (await _call(name, {"limit": 0})).isError
-        assert (await _call(name, {"limit": 201})).isError
+        for limit, error_type in ((0, "greater_than_equal"), (201, "less_than_equal")):
+            result = await _call(name, {"limit": limit})
+            assert result.isError
+            assert error_type in result.content[0].text
+    assert not any(route.called for route in routes)
+
+
+@pytest.mark.parametrize(
+    ("tool", "path", "data"),
+    [
+        ("get_taste_profile", "/api/taste", ["not", "an", "object"]),
+        ("list_ratings", "/api/ratings", {}),
+        ("get_listening_history", "/api/history", {"entries": None}),
+        ("get_now_playing", "/api/now", None),
+        ("list_queue", "/api/queue", {"items": [1], "remaining_s": 0}),
+    ],
+)
+async def test_bad_shape_is_tool_error(api, tool, path, data) -> None:
+    api.get(path).respond(json=ok(data))
+    result = await _call(tool)
+    assert result.isError
+    expected = (
+        f"Error executing tool {tool}: Home Studio returned an unexpected response (HTTP 200)"
+    )
+    assert result.content[0].text == expected
 
 
 async def test_api_error_surfaces_as_tool_error(api) -> None:
