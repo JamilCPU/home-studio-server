@@ -36,16 +36,29 @@ TRANSCRIPT_CHARS = 3000
 NO_PICKS_MESSAGE = "no suitable videos found"
 AUTH_EVENT_MESSAGE = "SourceAuthError: cookies or sign-in check"
 
+# Shared by all three prompts: without it the model treated taste as equal to the request
+# and filled a "latest tech news" queue with politics and fighting-game replays.
+RELEVANCE_RULES = """\
+- The request decides the topic. Every video must be about what the request asks for.
+- The listener's taste only ranks videos that already fit the request (format, depth,
+  channels, length). Never use it to add a topic the request did not ask for.
+- If too few videos fit the request, choose fewer. Never fill up with off-topic videos."""
+
 PLAN_PROMPT = Template(
     """You plan YouTube searches for a personal listening station.
 
 Reply with JSON only, no prose and no code fences. Schema:
-{"queries": ["<search query>", ...], "count": <integer 1-12>, "target_minutes": <integer or null>}
+{"queries": ["<search query>", ...], "count": <integer 1-12>, "target_minutes": <integer or null>,
+ "open_ended": <true or false>}
 
 Rules:
 - "queries": 1 to 4 distinct YouTube search queries that would find what was asked for.
+  Every query stays on the request's topics.
 - "count": how many videos to queue (1 to 12).
 - "target_minutes": total listening time wanted, or null if not stated.
+- "open_ended": true only when the request names no topic (for example "play something
+  I'd like" or "surprise me"); false whenever it asks for a topic, genre or kind of video.
+$rules
 
 Request:
 $request
@@ -62,8 +75,8 @@ Reply with JSON only, no prose and no code fences. Schema:
 
 Rules:
 - Choose at most $cap video ids, only from the candidates below; choose at least $count
-  where possible.
-- Prefer videos that match the request and the listener's taste.
+  where possible, but only videos that fit the request.
+$rules
 
 Request:
 $request
@@ -85,6 +98,7 @@ Rules:
 - Pick at most $count videos, only from the shortlist below, in the order they should play.
 - Each reason says why this video suits the request and the listener.
 - Target total listening time in minutes: $target.
+$rules
 
 Request:
 $request
@@ -141,14 +155,17 @@ def _whole_number(value: Any, key: str, *, nullable: bool = False) -> int | None
     return value
 
 
-def _parse_plan(data: dict[str, Any]) -> tuple[list[str], int, int | None]:
+def _parse_plan(data: dict[str, Any]) -> tuple[list[str], int, int | None, bool]:
+    """(queries, count, target_minutes, open_ended); open_ended is True only if the model
+    said exactly true, so a missing or odd flag never brings in off-topic favourites."""
     raw = _str_list(data.get("queries"), "queries", "plan")
     queries = [q.strip() for q in raw if q.strip()]
     if not queries:
         raise ClaudeBadOutput("plan: 'queries' must not be empty")
     count = _whole_number(data.get("count"), "count")
     target = _whole_number(data.get("target_minutes"), "target_minutes", nullable=True)
-    return queries[:MAX_QUERIES], max(1, min(MAX_COUNT, count or 0)), target
+    open_ended = data.get("open_ended") is True
+    return queries[:MAX_QUERIES], max(1, min(MAX_COUNT, count or 0)), target, open_ended
 
 
 def _parse_picks(data: dict[str, Any]) -> list[tuple[str, str]]:
@@ -204,14 +221,22 @@ def _long_enough(video: Video, allow_short: bool) -> bool:
 
 
 def _candidates(
-    conn: sqlite3.Connection, request_text: str, queries: list[str], data_api, ytdlp
+    conn: sqlite3.Connection,
+    request_text: str,
+    queries: list[str],
+    data_api,
+    ytdlp,
+    *,
+    open_ended: bool,
 ) -> list[Video]:
-    """Account-import candidates first, then search results; drops played-recently,
-    disliked, queued/playing and (unless asked for) short, live or unknown-length videos."""
+    """Search results, preceded by account-import candidates only for open-ended requests
+    (liked videos are about anything, so a topic request would get off-topic ones). Drops
+    played-recently, disliked, queued/playing and (unless asked for) short, live or
+    unknown-length videos."""
     excluded = (
         played_video_ids(conn, EXCLUDE_PLAYED_DAYS) | disliked_video_ids(conn) | _active_ids(conn)
     )
-    ids = _import_ids(conn, excluded)
+    ids = _import_ids(conn, excluded) if open_ended else []
     for query in queries:
         ids.extend(_search(query, data_api, ytdlp))
     fresh = [i for i in dict.fromkeys(ids) if i not in excluded]
@@ -244,16 +269,23 @@ def _choose(
     conn: sqlite3.Connection, request: AgentRequest, claude, data_api, ytdlp
 ) -> list[tuple[Video, str]]:
     taste = build_taste_context(conn)
-    plan = _ask_json(claude, PLAN_PROMPT.substitute(request=request.prompt, taste=taste), "plan")
-    queries, count, target = _parse_plan(plan)
+    plan_prompt = PLAN_PROMPT.substitute(request=request.prompt, taste=taste, rules=RELEVANCE_RULES)
+    queries, count, target, open_ended = _parse_plan(_ask_json(claude, plan_prompt, "plan"))
 
-    candidates = _candidates(conn, request.prompt, queries, data_api, ytdlp)
+    candidates = _candidates(
+        conn, request.prompt, queries, data_api, ytdlp, open_ended=open_ended
+    )
     if not candidates:
         raise NoPicks(NO_PICKS_MESSAGE)
     cap = min(MAX_COUNT, max(MIN_SHORTLIST, count))
     lines = "\n".join(_meta_line(v) for v in candidates)
     prompt = SHORTLIST_PROMPT.substitute(
-        request=request.prompt, candidates=lines, taste=taste, cap=cap, count=count
+        request=request.prompt,
+        candidates=lines,
+        taste=taste,
+        cap=cap,
+        count=count,
+        rules=RELEVANCE_RULES,
     )
     data = _ask_json(claude, prompt, "shortlist")
     wanted = set(_str_list(data.get("shortlist"), "shortlist", "shortlist")[:cap])
@@ -270,6 +302,7 @@ def _choose(
         request=request.prompt,
         taste=taste,
         shortlist=block,
+        rules=RELEVANCE_RULES,
     )
     by_id = {v.video_id: v for v in shortlisted}
     chosen: dict[str, tuple[Video, str]] = {}

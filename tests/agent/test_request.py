@@ -66,8 +66,11 @@ class FakeYt:
         return f"transcript of {video_id}"
 
 
-def plan(count=3):
-    return json.dumps({"queries": ["ros 2"], "count": count, "target_minutes": None})
+def plan(count=3, open_ended=None):
+    data = {"queries": ["ros 2"], "count": count, "target_minutes": None}
+    if open_ended is not None:
+        data["open_ended"] = open_ended
+    return json.dumps(data)
 
 
 def shortlist(*ids):
@@ -373,8 +376,8 @@ def test_account_imports_offered_before_search_results(db):
     record_import(db, "liked", video_id="played1")
     record_import(db, "liked", video_id="nodata")  # not in videos: no fetch, no quota
     end_play(db, start_play(db, "played1", None), 60, "finished")
-    claude = FakeClaude([plan(), shortlist("a"), picks(("a", "r"))])
-    run(db, claude)
+    claude = FakeClaude([plan(open_ended=True), shortlist("a"), picks(("a", "r"))])
+    run(db, claude, prompt="play something I'd like")
     lines = [ln.split(" | ")[0] for ln in claude.prompts[1].splitlines() if " | Title " in ln]
     assert lines[:3] == ["liked1", "wl1", "rec1"]
     assert "hist1" not in lines and "played1" not in lines and "nodata" not in lines
@@ -387,9 +390,44 @@ def test_account_import_candidates_capped_at_20(db):
     for i in range(25):
         upsert_video(db, vid(f"imp{i:02d}"))
         record_import(db, "liked", video_id=f"imp{i:02d}")
-    claude = FakeClaude([plan(), shortlist("a"), picks(("a", "r"))])
+    claude = FakeClaude([plan(open_ended=True), shortlist("a"), picks(("a", "r"))])
     run(db, claude)
     assert sum(f"imp{i:02d} | Title" in claude.prompts[1] for i in range(25)) == 20
+
+
+# -- topic relevance: a specific request never gets off-topic favourites ------------
+
+
+@pytest.mark.parametrize("flag", [None, False, "yes", 1])
+def test_specific_request_offers_no_account_imports(db, flag):
+    """Likes/playlists are only candidates when the plan says the request is open-ended
+    (missing or non-true flags count as specific)."""
+    from src.store.settings import record_import
+
+    upsert_video(db, vid("granblue"))
+    record_import(db, "liked", video_id="granblue")
+    claude = FakeClaude([plan(open_ended=flag), shortlist("a"), picks(("a", "r"))])
+    run(db, claude, prompt="catch me up on the latest tech news")
+    assert "granblue | Title" not in claude.prompts[1]
+    assert "a | Title a" in claude.prompts[1]
+
+
+def test_plan_prompt_asks_whether_request_is_open_ended(db):
+    claude = FakeClaude([ClaudeRateLimited("x")])
+    run(db, claude)
+    assert '"open_ended"' in claude.prompts[0]
+
+
+def test_every_prompt_makes_the_request_topic_a_hard_limit(db):
+    from src.agent.request import RELEVANCE_RULES
+
+    claude = FakeClaude([plan(), shortlist("a"), picks(("a", "r"))])
+    run(db, claude)
+    assert len(claude.prompts) == 3
+    for prompt in claude.prompts:
+        assert RELEVANCE_RULES in prompt
+        # the request comes before the taste block, so it reads as the primary input
+        assert prompt.index("Request:") < prompt.index("(no taste profile yet)")
 
 
 @pytest.mark.parametrize("count, target, want_count, want_target", [
