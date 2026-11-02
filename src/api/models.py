@@ -8,7 +8,7 @@ from src.player.engine import NowPlaying
 from src.store.agent import AgentRequest, TasteProfile
 from src.store.queue import QueueItem
 from src.store.settings import MorningSettings
-from src.store.videos import HistoryEntry, Rating, Video
+from src.store.videos import HistoryEntry, Rating, RatingEntry, Video
 
 
 def video_out(v: Video) -> dict[str, Any]:
@@ -52,6 +52,19 @@ def rating_out(r: Rating | None) -> dict[str, Any] | None:
         return None
     return {"liked": r.liked, "satisfaction": r.satisfaction, "notes": r.notes,
             "created_at": r.created_at}
+
+
+def rating_entry_out(r: RatingEntry) -> dict[str, Any]:
+    return {
+        "id": r.id,
+        "video_id": r.video_id,
+        "title": r.title,
+        "channel": r.channel_name,
+        "liked": r.liked,
+        "satisfaction": r.satisfaction,
+        "notes": r.notes,
+        "created_at": r.created_at,
+    }
 
 
 def history_out(e: HistoryEntry) -> dict[str, Any]:
