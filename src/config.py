@@ -1,4 +1,4 @@
-"""Configuration loader for YoutubeBrainwash.
+"""Configuration loader for Home Studio.
 
 Loads config.yaml, optionally deep-merges config.local.yaml on top,
 and applies environment variable overrides.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from src.models import AppConfig
+from src.models import DEFAULT_CLAUDE_ARGS, AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +42,31 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+def _resolve(base_dir: Path, value: str) -> str:
+    """A relative path from the YAML is relative to the config file's directory."""
+    candidate = Path(value)
+    return str(candidate if candidate.is_absolute() else base_dir / candidate)
+
+
+def _claude_args(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or not all(isinstance(a, str) for a in value):
+        raise ValueError("agent.claude_args must be a list of strings")
+    return tuple(value)
+
+
+def _text(value: object) -> str:
+    return "" if value is None else str(value).strip()
+
+
 def load_config(path: Path = Path("config.yaml")) -> AppConfig:
     """Load application configuration.
 
     1. Read *path* (default ``config.yaml``).
     2. If a sibling ``config.local.yaml`` exists, deep-merge it on top.
     3. Map the nested YAML structure to the flat ``AppConfig`` dataclass.
-    4. Apply environment variable overrides for OAuth credentials.
+       Relative ``db.path``, ``youtube.cookies_path`` and ``youtube.oauth_token_path``
+       values are resolved against the config file's directory (env var paths are used as given).
+    4. Apply environment variable overrides.
     """
     logger.info("Loading config from %s", path)
 
@@ -67,17 +85,13 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
     youtube = raw.get("youtube", {})
     curation = raw.get("curation", {})
     scoring = raw.get("scoring", {})
-    playback = raw.get("playback", {})
-    schedule = raw.get("schedule", {})
     api = raw.get("api", {})
     bluetooth = raw.get("bluetooth", {})
-
-    # Convert search_topics list to tuple for the frozen dataclass
-    search_topics_raw = curation.get("search_topics", ())
-    search_topics = tuple(search_topics_raw) if search_topics_raw else ()
-
-    # Bluetooth devices live under bluetooth.devices in the YAML
-    bt_devices: dict[str, str] = bluetooth.get("devices", {}) or {}
+    db = raw.get("db", {})
+    player = raw.get("player", {})
+    agent = raw.get("agent", {})
+    general = raw.get("general", {})
+    base_dir = Path(path).resolve().parent
 
     # -- Environment variable overrides ------------------------------------
 
@@ -101,6 +115,16 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
     if project_id and project_id != youtube.get("project_id", ""):
         logger.info("Using BRAINWASH_PROJECT_ID from environment")
 
+    youtube_api_key = os.environ.get(
+        "HOME_STUDIO_YOUTUBE_API_KEY", youtube.get("api_key", "")
+    )
+    bt_speaker_mac = os.environ.get(
+        "HOME_STUDIO_BT_SPEAKER_MAC", bluetooth.get("speaker_mac", "")
+    )
+    cookies_path = os.environ.get("HOME_STUDIO_COOKIES_PATH") or _resolve(
+        base_dir, youtube.get("cookies_path", "secrets/cookies.txt")
+    )
+
     return AppConfig(
         # YouTube OAuth
         client_id=client_id,
@@ -109,28 +133,28 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         # Curation
         max_candidates=curation.get("max_candidates", 80),
         transcript_candidates=curation.get("transcript_candidates", 30),
-        min_score=float(curation.get("min_score", 7.0)),
-        max_feed_size=curation.get("max_feed_size", 15),
-        search_topics=search_topics,
-        min_duration_minutes=curation.get("min_duration_minutes", 5),
-        max_duration_minutes=curation.get("max_duration_minutes", 60),
-        recency_hours=curation.get("recency_hours", 48),
         language=curation.get("language", "en"),
         # Scoring
-        claude_command=scoring.get("claude_command", "claude"),
+        claude_command=agent.get("claude_command", "claude"),
         max_prompt_tokens=scoring.get("max_prompt_tokens", 50000),
-        # Playback
-        snapcast_port=playback.get("snapcast_port", 1704),
-        snapcast_control_port=playback.get("snapcast_control_port", 1705),
-        sample_rate=playback.get("sample_rate", 48000),
-        channels=playback.get("channels", 2),
-        snap_fifo=playback.get("snap_fifo", "/tmp/snapfifo"),
-        # Schedule
-        curation_time=schedule.get("curation_time", "04:00"),
-        default_wakeup_time=schedule.get("default_wakeup_time", "07:30"),
         # API
         api_host=api.get("host", "0.0.0.0"),
-        api_port=api.get("port", 5000),
-        # Bluetooth
-        bt_devices=bt_devices,
+        api_port=api.get("port", 8765),
+        # Home Studio
+        db_path=_resolve(base_dir, db.get("path", "data/home_studio.db")),
+        youtube_api_key=youtube_api_key,
+        cookies_path=cookies_path,
+        mpv_socket=player.get("mpv_socket", "/tmp/home-studio-mpv.sock"),
+        bt_adapter=bluetooth.get("adapter", "hci1"),
+        bt_speaker_mac=bt_speaker_mac,
+        output_device_label=bluetooth.get("label", "Echo"),
+        timezone=general.get("timezone", "America/Chicago"),
+        claude_timeout_s=int(agent.get("timeout_s", 300)),
+        claude_args=_claude_args(agent.get("claude_args", DEFAULT_CLAUDE_ARGS)),
+        quota_ceiling=int(youtube.get("quota_ceiling", 9500)),
+        youtube_oauth_client_id=_text(youtube.get("oauth_client_id")),
+        youtube_oauth_client_secret=_text(youtube.get("oauth_client_secret")),
+        youtube_oauth_token_path=_resolve(
+            base_dir, youtube.get("oauth_token_path") or "secrets/youtube_oauth.json"
+        ),
     )

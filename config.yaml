@@ -1,4 +1,4 @@
-# YoutubeBrainwash Configuration
+# Home Studio Configuration
 # Copy to config.local.yaml for local overrides (git-ignored)
 
 youtube:
@@ -6,60 +6,53 @@ youtube:
   client_id: ""
   client_secret: ""
   project_id: ""
+  # Home Studio: API key only (set via HOME_STUDIO_YOUTUBE_API_KEY or config.local.yaml)
+  api_key: ""
+  cookies_path: "secrets/cookies.txt"
+  quota_ceiling: 9500
+  # YouTube account sign-in (device code). Client ID/secret go in config.local.yaml
+  # (scripts: set-youtube-oauth-client.ps1); the token file is written by the server.
+  oauth_client_id: ""
+  oauth_client_secret: ""
+  oauth_token_path: "secrets/youtube_oauth.json"
 
 curation:
   # How many candidate videos to fetch from subscriptions + search
   max_candidates: 80
   # How many candidates to fetch transcripts for (top N by recency/views)
   transcript_candidates: 30
-  # Minimum score (1-10) to include in the morning feed
-  min_score: 7.0
-  # Maximum videos in the morning feed playlist
-  max_feed_size: 15
-  # Search queries for discovering new content (supplementing subscriptions)
-  search_topics:
-    - "AI agents tutorial"
-    - "LLM research paper"
-    - "machine learning engineering"
-    - "Claude Anthropic"
-    - "self-hosting homelab"
-    - "Raspberry Pi projects"
-  # Video duration filters (minutes)
-  min_duration_minutes: 5
-  max_duration_minutes: 60
-  # Only consider videos published in the last N hours
-  recency_hours: 48
   # Language filter
   language: "en"
 
 scoring:
-  # Claude Code CLI command for scoring
-  claude_command: "claude"
   # Max tokens for scoring prompt
   max_prompt_tokens: 50000
 
-playback:
-  # Snapcast server config
-  snapcast_port: 1704
-  snapcast_control_port: 1705
-  # Audio format
-  sample_rate: 48000
-  channels: 2
-  # FIFO pipe path for Snapcast
-  snap_fifo: "/tmp/snapfifo"
-
-schedule:
-  # When to run the daily curation (24h format)
-  curation_time: "04:00"
-  # Default wake-up time (used until AlarmAPI is connected)
-  default_wakeup_time: "07:30"
-
 api:
   host: "0.0.0.0"
-  port: 5000
+  port: 8765
 
 bluetooth:
-  # Echo Dot MAC addresses (fill in after pairing)
-  devices:
-    kitchen: ""
-    bedroom: ""
+  adapter: "hci1"
+  speaker_mac: ""
+  label: "Echo"
+
+# --- Home Studio ---------------------------------------------------------
+# Secrets (API key, speaker MAC) belong in config.local.yaml or HOME_STUDIO_* env vars.
+general:
+  timezone: "America/Chicago"
+
+db:
+  # Relative paths (here and youtube.cookies_path) resolve against this file's directory.
+  path: "data/home_studio.db"
+
+player:
+  mpv_socket: "/tmp/home-studio-mpv.sock"
+
+agent:
+  claude_command: "claude"
+  timeout_s: 300
+  # Extra CLI args (Claude Code 2.1.86): no tools, no MCP servers, no saved session.
+  # Each call also runs in a fresh empty temp directory.
+  claude_args: ["--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+                "--no-session-persistence"]

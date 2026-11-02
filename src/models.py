@@ -1,4 +1,4 @@
-"""Domain models for YoutubeBrainwash.
+"""Domain models for Home Studio.
 
 All dataclasses are frozen (immutable) except PlaybackState.
 To update a frozen dataclass, use ``dataclasses.replace()``:
@@ -9,6 +9,15 @@ To update a frozen dataclass, use ``dataclasses.replace()``:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+# Default extra `claude` CLI arguments (agent.claude_args), checked against Claude Code
+# 2.1.86: no tools, no MCP servers (only the empty --mcp-config), no saved session.
+DEFAULT_CLAUDE_ARGS: tuple[str, ...] = (
+    "--tools", "",
+    "--strict-mcp-config",
+    "--mcp-config", '{"mcpServers":{}}',
+    "--no-session-persistence",
+)
 from datetime import datetime, timezone
 
 
@@ -24,35 +33,32 @@ class AppConfig:
     # Curation
     max_candidates: int = 80
     transcript_candidates: int = 30
-    min_score: float = 7.0
-    max_feed_size: int = 15
-    search_topics: tuple[str, ...] = ()
-    min_duration_minutes: int = 5
-    max_duration_minutes: int = 60
-    recency_hours: int = 48
     language: str = "en"
 
     # Scoring
     claude_command: str = "claude"
     max_prompt_tokens: int = 50000
 
-    # Playback
-    snapcast_port: int = 1704
-    snapcast_control_port: int = 1705
-    sample_rate: int = 48000
-    channels: int = 2
-    snap_fifo: str = "/tmp/snapfifo"
-
-    # Schedule
-    curation_time: str = "04:00"
-    default_wakeup_time: str = "07:30"
-
     # API
     api_host: str = "0.0.0.0"
-    api_port: int = 5000
+    api_port: int = 8765
 
-    # Bluetooth
-    bt_devices: dict[str, str] = field(default_factory=dict)
+    # Home Studio
+    db_path: str = "data/home_studio.db"
+    youtube_api_key: str = ""
+    cookies_path: str = "secrets/cookies.txt"
+    mpv_socket: str = "/tmp/home-studio-mpv.sock"
+    bt_adapter: str = "hci1"
+    bt_speaker_mac: str = ""
+    output_device_label: str = "Echo"
+    timezone: str = "America/Chicago"
+    claude_timeout_s: int = 300
+    claude_args: tuple[str, ...] = DEFAULT_CLAUDE_ARGS
+    quota_ceiling: int = 9500
+    # YouTube account sign-in (OAuth device flow); values live in config.local.yaml
+    youtube_oauth_client_id: str = ""
+    youtube_oauth_client_secret: str = ""
+    youtube_oauth_token_path: str = "secrets/youtube_oauth.json"
 
 
 @dataclass(frozen=True)

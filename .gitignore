@@ -14,6 +14,8 @@ build/
 *.egg
 
 # Data (local state, not tracked)
+data/*.db*
+secrets/
 data/watch_history.json
 data/score_log.json
 
@@ -30,3 +32,4 @@ Thumbs.db
 # Virtual env
 venv/
 .venv/
+data/interest_profile.json
