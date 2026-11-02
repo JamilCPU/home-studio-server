@@ -35,18 +35,20 @@ class TraitBody(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
 
 
-def _normalize_since(value: str) -> str:
+def _normalize_since(value: str | None) -> str | None:
     """Parse an ISO 8601 timestamp (naive = UTC, trailing Z ok) into a UTC isoformat string."""
+    if value is None:
+        return None
     text = value.strip()
     if text.endswith(("Z", "z")):
         text = text[:-1] + "+00:00"
     try:
         dt = datetime.fromisoformat(text)
-    except ValueError:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    except (ValueError, OverflowError):
         raise HTTPException(422, "since: must be an ISO 8601 timestamp") from None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat()
 
 
 def build_router(deps: Deps) -> APIRouter:
@@ -72,7 +74,7 @@ def build_router(deps: Deps) -> APIRouter:
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
     ):
-        since_utc = _normalize_since(since) if since is not None else None
+        since_utc = _normalize_since(since)
         with closing(deps.db_factory()) as conn:
             entries = history(
                 conn, unrated_only=unrated, since=since_utc, limit=limit, offset=offset
@@ -84,7 +86,7 @@ def build_router(deps: Deps) -> APIRouter:
         since: str | None = Query(default=None),
         limit: int = Query(default=50, ge=1, le=200),
     ):
-        since_utc = _normalize_since(since) if since is not None else None
+        since_utc = _normalize_since(since)
         with closing(deps.db_factory()) as conn:
             rows = list_ratings(conn, since=since_utc, limit=limit)
             return ok({"ratings": [rating_entry_out(r) for r in rows]})
