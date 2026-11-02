@@ -126,3 +126,27 @@ def test_mpv_command_error_is_409(api):
 def test_now_mpv_died_is_503(api):
     api.engine.raise_exc = MpvDied("gone")
     assert api.client.get("/api/now").status_code == 503
+
+
+def test_play_queue_item_starts_it(api):
+    for v in ("aaaaaaaaaaa", "bbbbbbbbbbb"):
+        api.stored(make_video(v))
+    with api.conn() as conn:
+        queue.enqueue(conn, "aaaaaaaaaaa", "user")
+        b = queue.enqueue(conn, "bbbbbbbbbbb", "user")
+    resp = api.client.post("/api/player/play", json={"queue_item_id": b})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["state"] == "playing" and data["item"]["id"] == b
+    assert api.engine.calls[-1] == ("play_item", b)
+
+
+def test_play_unknown_queue_item_is_404(api):
+    resp = api.client.post("/api/player/play", json={"queue_item_id": 777})
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "queue item not found"
+
+
+@pytest.mark.parametrize("body", [{}, {"queue_item_id": "x"}])
+def test_play_needs_an_integer_id(api, body):
+    assert api.client.post("/api/player/play", json=body).status_code == 422

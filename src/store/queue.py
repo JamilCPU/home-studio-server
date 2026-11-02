@@ -134,6 +134,20 @@ def pop_next(conn: sqlite3.Connection) -> QueueItem | None:
     return _get(conn, row[0])
 
 
+def take(conn: sqlite3.Connection, item_id: int) -> QueueItem | None:
+    """Like pop_next, but start queued item `item_id` (None, changing nothing, if it is not
+    queued). Items before it stay queued."""
+    row = conn.execute(
+        "SELECT id FROM queue_items WHERE id = ? AND status = 'queued'", (item_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    conn.execute("UPDATE queue_items SET status = 'played' WHERE status = 'playing'")
+    conn.execute("UPDATE queue_items SET status = 'playing' WHERE id = ?", (item_id,))
+    conn.commit()
+    return _get(conn, item_id)
+
+
 def previous(conn: sqlite3.Connection) -> QueueItem | None:
     """Replay the most recently played item (latest play start, so a reorder does not
     confuse it); the current one returns to the queue front."""
