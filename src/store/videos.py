@@ -51,6 +51,18 @@ class Rating:
 
 
 @dataclass(frozen=True)
+class RatingEntry:
+    id: int
+    video_id: str
+    title: str
+    channel_name: str | None
+    liked: bool | None
+    satisfaction: int | None
+    notes: str | None
+    created_at: str
+
+
+@dataclass(frozen=True)
 class HistoryEntry:
     play_id: int
     video: Video
@@ -234,14 +246,61 @@ def _row_to_entry(row: sqlite3.Row) -> HistoryEntry:
 
 
 def history(
-    conn: sqlite3.Connection, *, unrated_only: bool = False, limit: int = 50, offset: int = 0
+    conn: sqlite3.Connection,
+    *,
+    unrated_only: bool = False,
+    since: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> list[HistoryEntry]:
-    """Plays newest first; unrated_only keeps plays whose video has no rating yet."""
-    where = "WHERE r.id IS NULL" if unrated_only else ""
+    """Plays newest first; unrated_only keeps plays whose video has no rating yet.
+
+    since is an ISO 8601 UTC string; only plays started at or after it are returned.
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if unrated_only:
+        clauses.append("r.id IS NULL")
+    if since is not None:
+        clauses.append("p.started_at >= ?")
+        params.append(since)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = conn.execute(
-        f"{_HISTORY_SELECT} {where} ORDER BY p.id DESC LIMIT ? OFFSET ?", (limit, offset)
+        f"{_HISTORY_SELECT} {where} ORDER BY p.id DESC LIMIT ? OFFSET ?",
+        (*params, limit, offset),
     ).fetchall()
     return [_row_to_entry(r) for r in rows]
+
+
+def list_ratings(
+    conn: sqlite3.Connection, *, since: str | None = None, limit: int = 50
+) -> list[RatingEntry]:
+    """Every rating row (not only the latest per video), newest first.
+
+    since is an ISO 8601 UTC string; only ratings created at or after it are returned.
+    """
+    where = "WHERE r.created_at >= ?" if since is not None else ""
+    params = (since, limit) if since is not None else (limit,)
+    rows = conn.execute(
+        "SELECT r.id, r.video_id, v.title, v.channel_name, r.liked, r.satisfaction,"
+        " r.notes, r.created_at"
+        f" FROM ratings r JOIN videos v ON v.video_id = r.video_id {where}"
+        " ORDER BY r.id DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [
+        RatingEntry(
+            id=r["id"],
+            video_id=r["video_id"],
+            title=r["title"],
+            channel_name=r["channel_name"],
+            liked=None if r["liked"] is None else bool(r["liked"]),
+            satisfaction=r["satisfaction"],
+            notes=r["notes"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
 
 
 def recent_feedback(conn: sqlite3.Connection, limit: int = 50) -> list[HistoryEntry]:
