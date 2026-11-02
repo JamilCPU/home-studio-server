@@ -210,6 +210,23 @@ and the state becomes `"idle"`. No body.
 
 Response `200`: NowPlaying.
 
+### POST /api/player/play
+
+Play a chosen upcoming item now. Whatever is playing ends as skipped; items before the chosen
+one stay queued in order. To replay a video from history, add it with `POST /api/queue`
+(`"where": "next"`) and pass the returned `id` here.
+
+Request:
+
+```json
+{"queue_item_id": 43}
+```
+
+Response `200`: NowPlaying.
+
+Errors: `404` `"queue item not found"` if `queue_item_id` is not an upcoming item; `422` if it is
+missing or not an integer.
+
 ### POST /api/player/previous
 
 Restart the current item if more than 5 s in, otherwise go back to the previously played item.

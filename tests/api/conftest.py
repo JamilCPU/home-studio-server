@@ -57,6 +57,15 @@ class FakeEngine:
     def next(self):
         return self.play_next()
 
+    def play_item(self, item_id: int):
+        self._call("play_item", item_id)
+        with closing(self._db_factory()) as conn:
+            item = queue.take(conn, item_id)
+        if item is None:
+            raise LookupError(item_id)
+        self.item, self.position = item, 0.0
+        return item
+
     def previous(self):
         self._call("previous")
         return self.item

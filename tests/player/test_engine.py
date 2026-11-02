@@ -577,3 +577,45 @@ def test_recover_puts_playing_item_before_queued(factory, mpv):
         assert [i.video.video_id for i in queue.upcoming(conn)] == ["a", "b"]
     finally:
         conn.close()
+
+
+# -- play a chosen queue item -----------------------------------------------------
+
+
+def test_play_item_jumps_to_that_item_and_skips_current(engine, mpv, factory):
+    add(factory, "a")
+    add(factory, "b")
+    c = add(factory, "c")
+    engine.play_next()
+    mpv.pos = 42.0
+    item = engine.play_item(c)
+    assert item.id == c
+    assert mpv.calls_named("load")[-1] == ("load", url("c"))
+    first = plays(factory)[0]
+    assert first["end_reason"] == "skipped" and first["seconds_listened"] == 42.0
+    assert [i.video.video_id for i in _upcoming(factory)] == ["b"]  # the rest stay queued
+    assert engine.now().item.id == c
+
+
+def test_play_item_when_idle_starts_it(engine, mpv, factory):
+    add(factory, "a")
+    b = add(factory, "b")
+    assert engine.play_item(b).id == b
+    assert [i.video.video_id for i in _upcoming(factory)] == ["a"]
+
+
+def test_play_item_not_queued_raises_and_keeps_playing(engine, mpv, factory):
+    add(factory, "a")
+    engine.play_next()
+    with pytest.raises(LookupError):
+        engine.play_item(9999)
+    assert engine.now().item.video.video_id == "a"
+    assert plays(factory)[0]["ended_at"] is None
+
+
+def _upcoming(factory):
+    conn = factory()
+    try:
+        return queue.upcoming(conn)
+    finally:
+        conn.close()

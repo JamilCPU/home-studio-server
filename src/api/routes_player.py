@@ -22,6 +22,11 @@ class SkipBody(BaseModel):
     delta_s: float
 
 
+class PlayBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    queue_item_id: int
+
+
 def engine_call(fn: Callable[..., Any], *args: Any) -> Any:
     """Run an engine call, mapping mpv failures to 503/409."""
     try:
@@ -54,6 +59,13 @@ def build_router(deps: Deps) -> APIRouter:
     @router.post("/player/next")
     def next_track():
         return control(deps.engine.next)
+
+    @router.post("/player/play")
+    def play_item(body: PlayBody):
+        try:
+            return control(deps.engine.play_item, body.queue_item_id)
+        except LookupError:
+            raise HTTPException(404, "queue item not found") from None
 
     @router.post("/player/previous")
     def previous_track():
