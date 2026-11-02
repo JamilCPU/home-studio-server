@@ -1,0 +1,19 @@
+[Unit]
+Description=Home Studio server (player, agent, scheduler, REST API)
+After=network-online.target pipewire.service wireplumber.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/home-studio
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+# The venv first: mpv's ytdl hook and the agent's claude CLI are found on PATH.
+Environment=PATH=%h/home-studio/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/home-studio/.venv/bin/python -m src --config config.yaml serve
+Restart=on-failure
+RestartSec=5
+Nice=5
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target
