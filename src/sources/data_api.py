@@ -67,6 +67,41 @@ def _to_video(item: dict) -> Video:
     )
 
 
+class QuotaMeter:
+    """Daily quota spend plus serialized ``.execute()``, shared by every Data API client.
+
+    googleapiclient's HTTP transport is not thread-safe, and the quota check and
+    increment must not interleave: one lock covers both.
+    """
+
+    def __init__(
+        self,
+        db_factory: Callable,
+        ceiling: int = 9500,
+        clock: Callable[[], datetime] | None = None,
+        lock: threading.Lock | None = None,
+    ) -> None:
+        self._db_factory = db_factory
+        self._ceiling = ceiling
+        self._clock = clock or (lambda: datetime.now(ZoneInfo(_QUOTA_TZ)))
+        self.lock = lock or threading.Lock()
+
+    def execute(self, request) -> dict:
+        with self.lock:
+            return request.execute()
+
+    def today(self) -> str:
+        return self._clock().astimezone(ZoneInfo(_QUOTA_TZ)).date().isoformat()
+
+    def spend(self, units: int) -> None:
+        """Record units, or raise QuotaExceeded (recording nothing) if over the ceiling."""
+        day = self.today()
+        with self.lock, closing(self._db_factory()) as conn:
+            if settings.quota_used(conn, day) + units > self._ceiling:
+                raise QuotaExceeded(f"{units} units would exceed ceiling {self._ceiling}")
+            settings.add_quota(conn, day, units)
+
+
 class DataApi:
     def __init__(
         self,
@@ -75,33 +110,20 @@ class DataApi:
         ceiling: int = 9500,
         service=None,
         clock: Callable[[], datetime] | None = None,
+        meter: QuotaMeter | None = None,
     ) -> None:
-        self._db_factory = db_factory
-        self._ceiling = ceiling
-        self._clock = clock or (lambda: datetime.now(ZoneInfo(_QUOTA_TZ)))
         if service is None:
             from googleapiclient.discovery import build
 
             service = build("youtube", "v3", developerKey=api_key, cache_discovery=False)
         self._service = service
-        # googleapiclient's HTTP transport is not thread-safe, and the quota check and
-        # increment must not interleave: one lock covers both.
-        self._lock = threading.Lock()
+        self.meter = meter or QuotaMeter(db_factory, ceiling, clock)
 
     def _execute(self, request) -> dict:
-        with self._lock:
-            return request.execute()
-
-    def _today(self) -> str:
-        return self._clock().astimezone(ZoneInfo(_QUOTA_TZ)).date().isoformat()
+        return self.meter.execute(request)
 
     def _spend(self, units: int) -> None:
-        """Record units, or raise QuotaExceeded (recording nothing) if over the ceiling."""
-        day = self._today()
-        with self._lock, closing(self._db_factory()) as conn:
-            if settings.quota_used(conn, day) + units > self._ceiling:
-                raise QuotaExceeded(f"{units} units would exceed ceiling {self._ceiling}")
-            settings.add_quota(conn, day, units)
+        self.meter.spend(units)
 
     def search(self, query: str, max_results: int = 25) -> list[str]:
         self._spend(SEARCH_COST)
