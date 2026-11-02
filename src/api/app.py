@@ -33,6 +33,7 @@ class Deps:
     bt: Any  # BtMonitor
     scheduler_run_now: Callable[[], int]
     config: AppConfig
+    youtube_oauth: Any = None  # YouTubeOAuth; None reads as "unconfigured"
 
 
 def ok(data: Any, status: int = 200) -> JSONResponse:
@@ -67,12 +68,20 @@ async def _unexpected_error(request: Request, exc: Exception) -> JSONResponse:
 
 
 def create_app(deps: Deps) -> FastAPI:
-    from src.api import routes_agent, routes_library, routes_player, routes_queue, routes_system
+    from src.api import (
+        routes_agent,
+        routes_library,
+        routes_player,
+        routes_queue,
+        routes_system,
+        routes_youtube,
+    )
 
     app = FastAPI(title="Home Studio", version="1.0")
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(Exception, _unexpected_error)
-    for module in (routes_player, routes_queue, routes_library, routes_agent, routes_system):
+    for module in (routes_player, routes_queue, routes_library, routes_agent, routes_system,
+                   routes_youtube):
         app.include_router(module.build_router(deps), prefix="/api")
     return app
