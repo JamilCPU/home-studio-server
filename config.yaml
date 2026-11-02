@@ -10,6 +10,11 @@ youtube:
   api_key: ""
   cookies_path: "secrets/cookies.txt"
   quota_ceiling: 9500
+  # YouTube account sign-in (device code). Client ID/secret go in config.local.yaml
+  # (scripts: set-youtube-oauth-client.ps1); the token file is written by the server.
+  oauth_client_id: ""
+  oauth_client_secret: ""
+  oauth_token_path: "secrets/youtube_oauth.json"
 
 curation:
   # How many candidate videos to fetch from subscriptions + search
