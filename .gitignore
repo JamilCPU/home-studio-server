@@ -12,6 +12,7 @@ dist/
 build/
 .eggs/
 *.egg
+.coverage
 
 # Data (local state, not tracked)
 data/*.db*
