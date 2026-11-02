@@ -21,6 +21,8 @@ class SharedSecretMiddleware:
         header: str = "x-gateway-secret",
         open_paths: tuple[str, ...] = ("/healthz",),
     ) -> None:
+        if not secret.strip():
+            raise ValueError("SharedSecretMiddleware needs a non-empty secret")
         self._app = app
         self._secret = secret.encode()
         self._header = header.lower().encode("latin-1")
