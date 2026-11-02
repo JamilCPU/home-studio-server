@@ -71,6 +71,16 @@ class PlaybackEngine:
     def next(self) -> QueueItem | None:
         return self.play_next()
 
+    def play_item(self, item_id: int) -> QueueItem | None:
+        """Jump to queued item `item_id`, ending whatever is playing as skipped.
+
+        Raises LookupError (changing nothing) if that item is not in the queue."""
+        with self._lock, closing(self._db_factory()) as conn:
+            if item_id not in {i.id for i in queue.upcoming(conn)}:
+                raise LookupError(f"queue item {item_id} not queued")
+            self._end_current(conn, "skipped")
+            return self._play_item(conn, queue.take(conn, item_id))
+
     def previous(self) -> QueueItem | None:
         """Restart the current item if past 5 s, otherwise go back to the previous one."""
         with self._lock, closing(self._db_factory()) as conn:
