@@ -2,6 +2,9 @@
 youtube:
   api_key: "YOUR_YOUTUBE_DATA_API_KEY"
   cookies_path: "secrets/cookies.txt"
+  # YouTube account sign-in (OAuth client type "TVs and Limited Input devices")
+  oauth_client_id: "YOUR_CLIENT_ID.apps.googleusercontent.com"
+  oauth_client_secret: "YOUR_CLIENT_SECRET"
 
 bluetooth:
   speaker_mac: "AA:BB:CC:DD:EE:FF"

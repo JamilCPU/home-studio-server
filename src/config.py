@@ -54,14 +54,18 @@ def _claude_args(value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _text(value: object) -> str:
+    return "" if value is None else str(value).strip()
+
+
 def load_config(path: Path = Path("config.yaml")) -> AppConfig:
     """Load application configuration.
 
     1. Read *path* (default ``config.yaml``).
     2. If a sibling ``config.local.yaml`` exists, deep-merge it on top.
     3. Map the nested YAML structure to the flat ``AppConfig`` dataclass.
-       Relative ``db.path`` and ``youtube.cookies_path`` values are resolved
-       against the config file's directory (env var paths are used as given).
+       Relative ``db.path``, ``youtube.cookies_path`` and ``youtube.oauth_token_path``
+       values are resolved against the config file's directory (env var paths are used as given).
     4. Apply environment variable overrides.
     """
     logger.info("Loading config from %s", path)
@@ -148,4 +152,9 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         claude_timeout_s=int(agent.get("timeout_s", 300)),
         claude_args=_claude_args(agent.get("claude_args", DEFAULT_CLAUDE_ARGS)),
         quota_ceiling=int(youtube.get("quota_ceiling", 9500)),
+        youtube_oauth_client_id=_text(youtube.get("oauth_client_id")),
+        youtube_oauth_client_secret=_text(youtube.get("oauth_client_secret")),
+        youtube_oauth_token_path=_resolve(
+            base_dir, youtube.get("oauth_token_path") or "secrets/youtube_oauth.json"
+        ),
     )

@@ -328,3 +328,40 @@ class TestHomeStudioConfig:
         absolute = tmp_path / "elsewhere" / "h.db"
         config_file.write_text(yaml.dump({"db": {"path": str(absolute)}}), encoding="utf-8")
         assert load_config(config_file).db_path == str(absolute)
+
+
+class TestYouTubeOAuthConfig:
+    """youtube.oauth_client_id / oauth_client_secret / oauth_token_path."""
+
+    def test_defaults(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("{}", encoding="utf-8")
+        cfg = load_config(config_file)
+        assert cfg.youtube_oauth_client_id == ""
+        assert cfg.youtube_oauth_client_secret == ""
+        assert cfg.youtube_oauth_token_path == str(tmp_path / "secrets" / "youtube_oauth.json")
+
+    def test_local_yaml_sets_client(self, tmp_path: Path) -> None:
+        (tmp_path / "config.yaml").write_text(
+            yaml.dump({"youtube": {"api_key": "", "oauth_token_path": "t/o.json"}}),
+            encoding="utf-8",
+        )
+        (tmp_path / "config.local.yaml").write_text(
+            yaml.dump({"youtube": {"oauth_client_id": "fake-id.example",
+                                   "oauth_client_secret": "fake-secret"}}),
+            encoding="utf-8",
+        )
+        cfg = load_config(tmp_path / "config.yaml")
+        assert cfg.youtube_oauth_client_id == "fake-id.example"
+        assert cfg.youtube_oauth_client_secret == "fake-secret"
+        assert cfg.youtube_oauth_token_path == str(tmp_path / "t" / "o.json")
+
+    def test_values_are_stripped(self, tmp_path: Path) -> None:
+        (tmp_path / "config.yaml").write_text(
+            yaml.dump({"youtube": {"oauth_client_id": "  fake-id \n",
+                                   "oauth_client_secret": None}}),
+            encoding="utf-8",
+        )
+        cfg = load_config(tmp_path / "config.yaml")
+        assert cfg.youtube_oauth_client_id == "fake-id"
+        assert cfg.youtube_oauth_client_secret == ""

@@ -55,6 +55,10 @@ class AppConfig:
     claude_timeout_s: int = 300
     claude_args: tuple[str, ...] = DEFAULT_CLAUDE_ARGS
     quota_ceiling: int = 9500
+    # YouTube account sign-in (OAuth device flow); values live in config.local.yaml
+    youtube_oauth_client_id: str = ""
+    youtube_oauth_client_secret: str = ""
+    youtube_oauth_token_path: str = "secrets/youtube_oauth.json"
 
 
 @dataclass(frozen=True)
