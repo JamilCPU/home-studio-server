@@ -34,3 +34,18 @@ Thumbs.db
 venv/
 .venv/
 data/interest_profile.json
+
+# Extra ignores
+.env
+.env.*
+!.env.example
+*.keys
+*.db
+*.sqlite
+*.sqlite3
+node_modules/
+bin/
+obj/
+.vs/
+*.class
+target/
